@@ -156,6 +156,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 - **[Installation Guide](INSTALL.md)** - Detailed setup instructions for all platforms
 - **[Quick Start Guide](QUICKSTART.md)** - Get started in 5 minutes
+- **[Packaging Guide](docs/packaging.md)** - Build standalone binaries with PyInstaller
 - **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to the project
 - **[Changelog](CHANGELOG.md)** - Version history and release notes
 - **[Security Policy](SECURITY.md)** - Security considerations and reporting

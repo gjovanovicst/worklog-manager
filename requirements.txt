@@ -22,14 +22,20 @@ plyer>=2.0
 # PDF export functionality (Phase 3 & 4)
 reportlab>=3.6.0
 
+# System tray integration and icon rendering (Windows/Linux)
+pystray>=0.19.5
+pillow>=10.0.0
+
+# Native Windows integrations required by pystray
+pywin32>=305; platform_system == "Windows"
+
 # Python 3.6 compatibility
 dataclasses; python_version < "3.7"
 
 # Optional Dependencies for Enhanced Experience:
 
-# Windows-specific system integration (Windows only)
-# Uncomment if you're on Windows and want full system tray support
-# pywin32>=227
+# Packaging / distribution helpers
+# pyinstaller>=6.3.0
 
 # Development Dependencies (optional):
 # Uncomment these for development/testing

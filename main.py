@@ -31,14 +31,24 @@ Version: 1.7.0
 
 import sys
 import os
+import json
 import logging
-import threading
 import atexit
-from datetime import datetime
+import configparser
+import tempfile
+from typing import List, Optional, Tuple
+from datetime import datetime, timedelta
+from pathlib import Path
 
 # Add the project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
+
+try:
+    from scripts.packaging.create_shortcuts import create_shortcut, shortcut_exists
+except ImportError:  # pragma: no cover - optional at runtime
+    create_shortcut = None  # type: ignore[assignment]
+    shortcut_exists = None  # type: ignore[assignment]
 
 # Import datetime compatibility for Python 3.6 support (must be imported early)
 from utils.datetime_compat import datetime_fromisoformat, fromisoformat_compat  # noqa: F401
@@ -51,6 +61,145 @@ from core.simple_backup_manager import BackupManager
 from gui.theme_manager import ThemeManager
 from gui.system_tray import SystemTrayManager
 from gui.keyboard_shortcuts import KeyboardShortcutManager
+from utils.single_instance import SingleInstanceManager
+
+APP_SHORTCUT_NAME = "WorklogManager"
+APP_VERSION = "1.7.0"
+_SHORTCUT_DECISION_TTL = timedelta(days=30)
+_SHORTCUT_STATE_FILE = Path.home() / ".worklog_manager" / "shortcut_prompt.json"
+
+
+def _load_shortcut_state() -> dict:
+    if not _SHORTCUT_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(_SHORTCUT_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_shortcut_state(state: dict) -> None:
+    _SHORTCUT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SHORTCUT_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _runtime_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(project_root)
+
+
+def _coerce_log_directory(raw: str, base_dir: Path) -> Path:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = base_dir / candidate
+    return candidate
+
+
+def _config_log_directory(base_dir: Path) -> Optional[Path]:
+    config_path = base_dir / "config.ini"
+    if not config_path.exists():
+        return None
+
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except Exception:
+        return None
+
+    if parser.has_option("Logging", "log_directory"):
+        raw_value = parser.get("Logging", "log_directory").strip()
+        if raw_value:
+            return _coerce_log_directory(raw_value, base_dir)
+    return None
+
+
+def _prepare_log_directory(base_dir: Path) -> Tuple[Path, List[str]]:
+    warnings: List[str] = []
+
+    env_override = os.environ.get("WORKLOG_LOG_DIR", "").strip()
+    if env_override:
+        candidate = _coerce_log_directory(env_override, base_dir)
+    else:
+        candidate = _config_log_directory(base_dir) or (base_dir / "logs")
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate, warnings
+    except Exception as exc:
+        warnings.append(
+            f"Could not use log directory {candidate}: {exc}. Falling back to user log directory."
+        )
+
+    fallback = Path.home() / ".worklog_manager" / "logs"
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback, warnings
+    except Exception as exc:
+        warnings.append(
+            f"Could not create fallback log directory {fallback}: {exc}. Using temporary directory."
+        )
+
+    temp_dir = Path(tempfile.gettempdir()) / "worklog_manager_logs"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir, warnings
+
+
+def _parse_iso_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime_fromisoformat(value)
+    except Exception:
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+
+def _normalize_shortcut_entry(entry):
+    if isinstance(entry, dict):
+        normalized = {}
+        status = entry.get("status") or entry.get("state")
+        if isinstance(status, str):
+            normalized["status"] = status
+        timestamp = entry.get("timestamp")
+        if isinstance(timestamp, str):
+            normalized["timestamp"] = timestamp
+        version = entry.get("version")
+        if isinstance(version, str):
+            normalized["version"] = version
+        return normalized
+    if isinstance(entry, str):
+        return {"status": entry}
+    return {}
+
+
+def _shortcut_decision_expired(entry):
+    version = entry.get("version")
+    if version is None or version != APP_VERSION:
+        return True
+
+    timestamp = entry.get("timestamp")
+    if not timestamp:
+        return True
+
+    recorded = _parse_iso_timestamp(timestamp)
+    if recorded is None:
+        return True
+
+    if datetime.utcnow() - recorded > _SHORTCUT_DECISION_TTL:
+        return True
+    return False
+
+
+def _state_payload(status: str) -> dict:
+    # Persist the user's choice along with lightweight context for future resets.
+    return {
+        "status": status,
+        "timestamp": datetime.utcnow().replace(microsecond=0).isoformat(),
+        "version": APP_VERSION,
+    }
 
 
 class WorklogApplication:
@@ -69,6 +218,20 @@ class WorklogApplication:
     def __init__(self):
         """Initialize the application with all components."""
         self.logger = logging.getLogger(__name__)
+
+        self.single_instance = SingleInstanceManager()
+        if not self.single_instance.acquire():
+            self.logger.info("Existing Worklog Manager instance detected; activating it instead of starting a new one.")
+            notified = self.single_instance.notify_existing()
+            if notified:
+                self.logger.info("Activation request delivered to running instance.")
+            else:
+                self.logger.warning("Existing instance did not respond to activation request.")
+            raise SystemExit(0)
+
+        self._pending_activation = False
+        if self.single_instance:
+            self.single_instance.set_activation_callback(self._handle_external_activation)
         
         # Initialize basic managers
         self.settings_manager = SettingsManager()
@@ -129,12 +292,114 @@ class WorklogApplication:
     def _setup_cleanup(self):
         """Setup cleanup handlers for graceful shutdown."""
         atexit.register(self.cleanup)
+
+    def _handle_external_activation(self) -> None:
+        if self.main_window and getattr(self.main_window, "root", None):
+            try:
+                self.main_window.root.after(0, self.main_window.show_window)
+            except Exception:
+                self.logger.exception("Failed to surface main window after activation request")
+        else:
+            self._pending_activation = True
+
+    def _schedule_desktop_shortcut_prompt(self) -> None:
+        if create_shortcut is None or shortcut_exists is None:
+            return
+        if not getattr(sys, "frozen", False):
+            return
+
+        if sys.platform.startswith("win"):
+            platform = "windows"
+        elif sys.platform.startswith("linux"):
+            platform = "linux"
+        else:
+            return
+
+        existing_shortcut = False
+        try:
+            existing_shortcut = shortcut_exists(platform, name=APP_SHORTCUT_NAME)
+            if existing_shortcut:
+                return
+        except Exception as exc:
+            self.logger.debug("Skipping shortcut prompt: %s", exc)
+            return
+
+        state = _load_shortcut_state()
+        entry = _normalize_shortcut_entry(state.get(platform))
+        state_changed = False
+
+        if entry.get("status") == "created":
+            if existing_shortcut:
+                return
+            state.pop(platform, None)
+            state_changed = True
+            entry = {}
+        elif entry.get("status") == "declined":
+            if not _shortcut_decision_expired(entry):
+                return
+            state.pop(platform, None)
+            state_changed = True
+            entry = {}
+
+        if state_changed:
+            _save_shortcut_state(state)
+
+        def _prompt_user() -> None:
+            try:
+                from tkinter import messagebox
+            except Exception as exc:  # pragma: no cover - Tk unavailable
+                self.logger.debug("Shortcut prompt unavailable: %s", exc)
+                return
+
+            parent = self.main_window.root if self.main_window else None
+            response = messagebox.askyesno(
+                "Create Desktop Shortcut?",
+                "Would you like to add Worklog Manager to your desktop?",
+                parent=parent,
+            )
+
+            if not response:
+                state[platform] = _state_payload("declined")
+                _save_shortcut_state(state)
+                return
+
+            try:
+                result = create_shortcut(
+                    platform,
+                    binary=Path(sys.executable),
+                    name=APP_SHORTCUT_NAME,
+                )
+            except Exception as exc:
+                self.logger.warning("Desktop shortcut creation failed: %s", exc)
+                messagebox.showerror(
+                    "Shortcut Creation Failed",
+                    f"Could not create the desktop shortcut:\n{exc}",
+                    parent=parent,
+                )
+                return
+
+            state[platform] = _state_payload("created")
+            _save_shortcut_state(state)
+
+            summary = f"Shortcut added at {result.desktop}"
+            if result.applications and result.applications != result.desktop:
+                summary += f"\nLauncher registered at {result.applications}"
+            messagebox.showinfo("Shortcut Created", summary, parent=parent)
+
+        if self.main_window and getattr(self.main_window, "root", None):
+            self.main_window.root.after(1500, _prompt_user)
     
     def create_main_window(self):
         """Create and configure the main application window."""
         try:
             # Create main window
             self.main_window = MainWindow()
+
+            if self.single_instance:
+                self.single_instance.set_activation_callback(self._handle_external_activation)
+                if self._pending_activation:
+                    self.main_window.root.after(0, self.main_window.show_window)
+                    self._pending_activation = False
             
             # Initialize UI-dependent managers after main window exists
             try:
@@ -193,6 +458,7 @@ class WorklogApplication:
                     self.logger.warning(f"Could not apply theme: {e}")
             
             self.logger.info("Main window created and configured")
+            self._schedule_desktop_shortcut_prompt()
             return self.main_window
             
         except Exception as e:
@@ -206,7 +472,7 @@ class WorklogApplication:
             main_window = self.create_main_window()
             
             # Start the application
-            self.logger.info("Starting Worklog Manager Application v1.7.0")
+            self.logger.info(f"Starting Worklog Manager Application v{APP_VERSION}")
             main_window.run()
             
         except Exception as e:
@@ -243,23 +509,26 @@ class WorklogApplication:
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
+        finally:
+            if self.single_instance and self.single_instance.is_primary:
+                self.single_instance.release()
+
 
 def setup_logging():
     """Setup application logging."""
-    # Create logs directory if it doesn't exist
-    logs_dir = os.path.join(project_root, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    
+    base_dir = _runtime_base_dir()
+    logs_dir, setup_warnings = _prepare_log_directory(base_dir)
+
     # Create log filename with current date
     log_filename = f"worklog_{datetime.now().strftime('%Y%m%d')}.log"
-    log_path = os.path.join(logs_dir, log_filename)
-    
+    log_path = logs_dir / log_filename
+
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_path),
+            logging.FileHandler(str(log_path), encoding="utf-8"),
             logging.StreamHandler(sys.stdout)
         ]
     )
@@ -268,12 +537,17 @@ def setup_logging():
     logger = logging.getLogger(__name__)
     logger.info("="*50)
     logger.info("Worklog Manager Application Starting")
-    logger.info(f"Version: 1.7.0")
+    logger.info(f"Version: {APP_VERSION}")
     logger.info(f"Python: {sys.version}")
     logger.info(f"Working Directory: {os.getcwd()}")
     logger.info(f"Project Root: {project_root}")
+    logger.info(f"Runtime Base: {base_dir}")
+    logger.info(f"Log Directory: {logs_dir}")
     logger.info(f"Log File: {log_path}")
     logger.info("="*50)
+
+    for warning in setup_warnings:
+        logger.warning(warning)
 
 
 def main():
@@ -283,7 +557,7 @@ def main():
         setup_logging()
         logger = logging.getLogger(__name__)
 
-        logger.info("Initializing Worklog Manager v1.7.0 with advanced features...")
+        logger.info(f"Initializing Worklog Manager v{APP_VERSION} with advanced features...")
 
         # Create and run the comprehensive application
         app = WorklogApplication()

@@ -11,9 +11,65 @@ import os
 import sys
 import threading
 import base64
+import logging
 from typing import Optional, Callable, Dict, List
 from datetime import datetime
 import time
+from pathlib import Path
+
+from scripts.packaging.pyinstaller_settings import get_icon
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_tray_icon() -> Optional[str]:
+    """Return a filesystem path to the preferred tray icon if available."""
+
+    candidates: List[Path] = []
+
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable)
+        candidates.extend(
+            [
+                exe_path.with_suffix(".ico"),
+                exe_path.parent / "images" / "worklog-manager-tray.ico",
+                exe_path.parent / "images" / "worklog-manager-tray.png",
+            ]
+        )
+
+    icon_value = get_icon("windows")
+    if icon_value:
+        candidates.append(Path(icon_value))
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        base = Path(meipass)
+        candidates.extend(
+            [
+                base / "worklog-manager-tray.ico",
+                base / "worklog-manager-tray.png",
+                base / "images" / "worklog-manager-tray.ico",
+                base / "images" / "worklog-manager-tray.png",
+            ]
+        )
+
+    module_dir = Path(__file__).resolve().parent
+    candidates.extend(
+        [
+            module_dir.parent / "images" / "worklog-manager-tray.ico",
+            module_dir.parent / "images" / "worklog-manager-tray.png",
+        ]
+    )
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file():
+            return str(resolved)
+
+    return None
 
 # Try to import pystray for system tray functionality
 try:
@@ -22,7 +78,7 @@ try:
     PYSTRAY_AVAILABLE = True
 except ImportError:
     PYSTRAY_AVAILABLE = False
-    print("pystray not available. System tray functionality will be limited.")
+    logger.warning("pystray not available. System tray functionality will be disabled.")
 
 # Try to import PIL for icon creation
 try:
@@ -30,6 +86,7 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+    logger.warning("Pillow not available. Using fallback tray icon handling.")
 
 class SystemTrayManager:
     """Manages system tray integration for the worklog application."""
@@ -48,46 +105,69 @@ class SystemTrayManager:
         self.current_status = "idle"
         self.work_start_time = None
         self.is_on_break = False
-        
+
         # Create default icon
         self.icon_image = self.create_default_icon()
-        
+        if self.icon_image is None and not PIL_AVAILABLE:
+            logger.warning(
+                "System tray icon disabled: Pillow (PIL) is required. Install the 'pillow' package."
+            )
+
         # Setup protocol for window close (optional, controlled by setup_protocol parameter)
         self.original_protocol = None
         if setup_protocol:
             self.setup_window_protocol()
     
     def create_default_icon(self):
-        """Create a default icon for the system tray."""
+        """Create or load the tray icon image."""
+        icon_path = _resolve_tray_icon()
+
+        if icon_path and PIL_AVAILABLE:
+            try:
+                with Image.open(icon_path) as source:
+                    return source.copy()
+            except Exception:
+                logger.debug("Failed to load tray icon from %s", icon_path, exc_info=True)
+
         if PIL_AVAILABLE:
-            # Create a simple colored icon
             size = (64, 64)
-            image = Image.new('RGBA', size, (0, 0, 0, 0))
+            image = Image.new("RGBA", size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
-            
-            # Draw a clock-like icon
+
             center = (size[0] // 2, size[1] // 2)
             radius = size[0] // 2 - 4
-            
-            # Outer circle
-            draw.ellipse([center[0] - radius, center[1] - radius,
-                         center[0] + radius, center[1] + radius],
-                        fill='#2c3e50', outline='#34495e', width=2)
-            
-            # Clock hands
-            draw.line([center[0], center[1], center[0], center[1] - radius + 10],
-                     fill='white', width=3)
-            draw.line([center[0], center[1], center[0] + radius - 15, center[1]],
-                     fill='white', width=2)
-            
-            # Center dot
-            draw.ellipse([center[0] - 3, center[1] - 3,
-                         center[0] + 3, center[1] + 3], fill='white')
-            
+
+            draw.ellipse(
+                [
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius,
+                ],
+                fill="#2c3e50",
+                outline="#34495e",
+                width=2,
+            )
+
+            draw.line(
+                [center[0], center[1], center[0], center[1] - radius + 10],
+                fill="white",
+                width=3,
+            )
+            draw.line(
+                [center[0], center[1], center[0] + radius - 15, center[1]],
+                fill="white",
+                width=2,
+            )
+
+            draw.ellipse(
+                [center[0] - 3, center[1] - 3, center[0] + 3, center[1] + 3],
+                fill="white",
+            )
+
             return image
-        else:
-            # Fallback: try to use a default system icon
-            return None
+
+        return None
     
     def create_status_icon(self, status: str):
         """Create an icon based on current work status."""
@@ -219,7 +299,7 @@ class SystemTrayManager:
     def start_tray(self) -> bool:
         """Start the system tray."""
         if not PYSTRAY_AVAILABLE:
-            print("System tray not available (pystray not installed)")
+            logger.warning("System tray not available (pystray not installed)")
             return False
         
         if self.running:
@@ -245,21 +325,19 @@ class SystemTrayManager:
             # Set default action (triggered by double-click on most platforms)
             self.tray_icon.default_action = lambda icon, item=None: self.toggle_window_action(icon, item)
             
-            print(f"System tray icon created with default_action set to show_window")
+            logger.info("System tray icon created with default action bound to toggle window")
             
             # Start tray in separate thread
             self.running = True
             self.tray_thread = threading.Thread(target=self._run_tray, daemon=True)
             self.tray_thread.start()
             
-            print(f"System tray thread started")
+            logger.info("System tray background thread started")
             
             return True
             
         except Exception as e:
-            print(f"Error starting system tray: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error starting system tray: %s", e)
             return False
     
     def _run_tray(self):
@@ -268,7 +346,7 @@ class SystemTrayManager:
             if self.tray_icon:
                 self.tray_icon.run()
         except Exception as e:
-            print(f"Error running system tray: {e}")
+            logger.exception("Error running system tray: %s", e)
         finally:
             self.running = False
     
@@ -280,7 +358,7 @@ class SystemTrayManager:
             try:
                 self.tray_icon.stop()
             except Exception as e:
-                print(f"Error stopping system tray: {e}")
+                logger.exception("Error stopping system tray: %s", e)
         
         if self.tray_thread:
             self.tray_thread.join(timeout=2)

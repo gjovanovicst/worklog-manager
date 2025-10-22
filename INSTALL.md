@@ -307,6 +307,13 @@ After successful installation:
 3. **Configure settings** to match your preferences
 4. **Start tracking** your work time!
 
+## Building Installers
+
+Ready to ship Worklog Manager to other users? Follow the
+[Packaging Guide](docs/packaging.md) to generate PyInstaller builds for Windows,
+macOS, and Linux. The guide walks through prerequisites, build commands, and
+next steps for wrapping the binaries in native installers.
+
 ## Updating
 
 To update to the latest version:
