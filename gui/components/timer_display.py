@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Optional
 import logging
 
 from data.models import TimeCalculation, WorklogState
@@ -23,6 +22,7 @@ class TimerDisplay(ttk.Frame):
         self.logger = logging.getLogger(__name__)
         self.settings_manager = settings_manager
         self.time_calculator = TimeCalculator(settings_manager)
+        self.theme_manager = None
         
         zero_time = self.time_calculator.format_duration_with_seconds(0)
         norm_time = self.time_calculator.format_duration_with_seconds(
@@ -36,13 +36,74 @@ class TimerDisplay(ttk.Frame):
         self.productive_time_var = tk.StringVar(value=zero_time)
         self.remaining_var = tk.StringVar(value=norm_time)
         self.overtime_var = tk.StringVar(value=zero_time)
+        
+        # Store reference to widgets that need theming
+        self.current_frame = None
+        self.current_session_label_widget = None
+        self.current_session_title_label = None
+        self.total_work_title_label = None
+        self.total_work_label = None
+        self.break_time_title_label = None
+        self.break_time_label = None
+        self.productive_time_title_label = None
+        self.productive_time_label = None
+        self.remaining_title_label = None
+        self.remaining_label = None
+        self.overtime_title_label = None
+        self.overtime_label = None
 
         self._create_widgets()
+    
+    def _get_font_config(self, size_modifier=0, bold=False):
+        """Get font configuration from settings.
+        
+        Args:
+            size_modifier: Amount to add/subtract from base font size
+            bold: Whether to make the font bold
+            
+        Returns:
+            tuple: Font configuration (family, size, weight)
+        """
+        if self.settings_manager:
+            font_family = self.settings_manager.settings.appearance.font_family
+            font_size = self.settings_manager.settings.appearance.font_size + size_modifier
+        else:
+            # Fallback to defaults
+            font_family = "Arial"
+            font_size = 10 + size_modifier
+        
+        if bold:
+            return (font_family, font_size, "bold")
+        return (font_family, font_size)
     
     def update_settings_manager(self, settings_manager):
         """Update the settings manager and time calculator."""
         self.settings_manager = settings_manager
         self.time_calculator = TimeCalculator(settings_manager)
+        # Update fonts when settings change
+        self._update_fonts()
+    
+    def _update_fonts(self):
+        """Update fonts in all labels based on current settings."""
+        try:
+            # Update current session label
+            if hasattr(self, 'current_session_label_widget'):
+                self.current_session_label_widget.config(font=self._get_font_config(size_modifier=2, bold=True))
+            
+            # Update value labels
+            if hasattr(self, 'total_work_label'):
+                self.total_work_label.config(font=self._get_font_config(size_modifier=-1, bold=True))
+            if hasattr(self, 'break_time_label'):
+                self.break_time_label.config(font=self._get_font_config(size_modifier=-1, bold=True))
+            if hasattr(self, 'productive_time_label'):
+                self.productive_time_label.config(font=self._get_font_config(size_modifier=-1, bold=True))
+            if hasattr(self, 'remaining_label'):
+                self.remaining_label.config(font=self._get_font_config(size_modifier=-1, bold=True))
+            if hasattr(self, 'overtime_label'):
+                self.overtime_label.config(font=self._get_font_config(size_modifier=-1, bold=True))
+                
+        except Exception as e:
+            self.logger.error(f"Error updating fonts: {e}")
     
     def _create_widgets(self):
         """Create and layout the timer display widgets."""
@@ -54,45 +115,49 @@ class TimerDisplay(ttk.Frame):
         row = 0
         
         # Current session time (highlighted)
-        current_frame = tk.Frame(main_frame, bg="#E8F4FD", relief="ridge", bd=1)
-        current_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        current_frame.columnconfigure(1, weight=1)
+        self.current_frame = tk.Frame(main_frame, relief="ridge", bd=1)
+        self.current_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self.current_frame.columnconfigure(1, weight=1)
         
-        tk.Label(current_frame, text="Current Session:", 
-                font=("Arial", 10, "bold"), bg="#E8F4FD").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.current_session_title_label = tk.Label(self.current_frame, text="Current Session:", 
+                font=self._get_font_config(bold=True))
+        self.current_session_title_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
         
-        self.current_session_label = tk.Label(current_frame, textvariable=self.current_session_var,
-                                            font=("Arial", 12, "bold"), fg="#0066CC", bg="#E8F4FD")
-        self.current_session_label.grid(row=0, column=1, sticky="e", padx=5, pady=5)
+        self.current_session_label_widget = tk.Label(self.current_frame, textvariable=self.current_session_var,
+                                            font=self._get_font_config(size_modifier=2, bold=True))
+        self.current_session_label_widget.grid(row=0, column=1, sticky="e", padx=5, pady=5)
         
         row += 1
         
         # Total work time
-        tk.Label(main_frame, text="Total Work Time:", 
-                font=("Arial", 9)).grid(row=row, column=0, sticky="w", pady=2)
+        self.total_work_title_label = tk.Label(main_frame, text="Total Work Time:", 
+                font=self._get_font_config(size_modifier=-1))
+        self.total_work_title_label.grid(row=row, column=0, sticky="w", pady=2)
         
         self.total_work_label = tk.Label(main_frame, textvariable=self.total_work_var,
-                                       font=("Arial", 9, "bold"))
+                                       font=self._get_font_config(size_modifier=-1, bold=True))
         self.total_work_label.grid(row=row, column=1, sticky="e", pady=2)
         
         row += 1
         
         # Break time
-        tk.Label(main_frame, text="Break Time:", 
-                font=("Arial", 9)).grid(row=row, column=0, sticky="w", pady=2)
+        self.break_time_title_label = tk.Label(main_frame, text="Break Time:", 
+                font=self._get_font_config(size_modifier=-1))
+        self.break_time_title_label.grid(row=row, column=0, sticky="w", pady=2)
         
         self.break_time_label = tk.Label(main_frame, textvariable=self.break_time_var,
-                                       font=("Arial", 9, "bold"))
+                                       font=self._get_font_config(size_modifier=-1, bold=True))
         self.break_time_label.grid(row=row, column=1, sticky="e", pady=2)
         
         row += 1
         
         # Productive time
-        tk.Label(main_frame, text="Productive Time:", 
-                font=("Arial", 9)).grid(row=row, column=0, sticky="w", pady=2)
+        self.productive_time_title_label = tk.Label(main_frame, text="Productive Time:", 
+                font=self._get_font_config(size_modifier=-1))
+        self.productive_time_title_label.grid(row=row, column=0, sticky="w", pady=2)
         
         self.productive_time_label = tk.Label(main_frame, textvariable=self.productive_time_var,
-                                            font=("Arial", 9, "bold"))
+                                            font=self._get_font_config(size_modifier=-1, bold=True))
         self.productive_time_label.grid(row=row, column=1, sticky="e", pady=2)
         
         row += 1
@@ -103,21 +168,23 @@ class TimerDisplay(ttk.Frame):
         row += 1
         
         # Remaining time
-        tk.Label(main_frame, text="Remaining:", 
-                font=("Arial", 9)).grid(row=row, column=0, sticky="w", pady=2)
+        self.remaining_title_label = tk.Label(main_frame, text="Remaining:", 
+                font=self._get_font_config(size_modifier=-1))
+        self.remaining_title_label.grid(row=row, column=0, sticky="w", pady=2)
         
         self.remaining_label = tk.Label(main_frame, textvariable=self.remaining_var,
-                                      font=("Arial", 9, "bold"))
+                                      font=self._get_font_config(size_modifier=-1, bold=True))
         self.remaining_label.grid(row=row, column=1, sticky="e", pady=2)
         
         row += 1
         
         # Overtime
-        tk.Label(main_frame, text="Overtime:", 
-                font=("Arial", 9)).grid(row=row, column=0, sticky="w", pady=2)
+        self.overtime_title_label = tk.Label(main_frame, text="Overtime:", 
+                font=self._get_font_config(size_modifier=-1))
+        self.overtime_title_label.grid(row=row, column=0, sticky="w", pady=2)
         
         self.overtime_label = tk.Label(main_frame, textvariable=self.overtime_var,
-                                     font=("Arial", 9, "bold"))
+                                     font=self._get_font_config(size_modifier=-1, bold=True))
         self.overtime_label.grid(row=row, column=1, sticky="e", pady=2)
         
         # Configure column weights
@@ -165,11 +232,7 @@ class TimerDisplay(ttk.Frame):
         Args:
             calculations: TimeCalculation object
         """
-        # Color scheme
-        normal_color = "#000000"  # Black
-        warning_color = "#FF8C00"  # Orange
-        overtime_color = "#DC143C"  # Red
-        good_color = "#006400"  # Green
+        normal_color, warning_color, overtime_color, good_color = self._get_status_palette()
         
         # Productive time color
         if calculations.is_overtime:
@@ -208,7 +271,67 @@ class TimerDisplay(ttk.Frame):
         self.overtime_var.set(zero_time)
         
         # Reset colors
-        normal_color = "#000000"
+        normal_color, _, _, _ = self._get_status_palette()
         self.productive_time_label.config(fg=normal_color)
         self.remaining_label.config(fg=normal_color)
         self.overtime_label.config(fg=normal_color)
+    
+    def register_with_theme_manager(self, theme_manager):
+        """Register widgets with the theme manager for theme updates.
+        
+        Args:
+            theme_manager: ThemeManager instance
+        """
+        if theme_manager:
+            self.theme_manager = theme_manager
+            self.logger.debug("Registering TimerDisplay widgets with theme manager")
+            # Register the current session frame with a highlighted background
+            if self.current_frame:
+                theme_manager.register_widget(self.current_frame, 'highlighted_bg')
+            
+            # Register the current session labels
+            if self.current_session_title_label:
+                theme_manager.register_widget(self.current_session_title_label, 'highlighted_label')
+            
+            if self.current_session_label_widget:
+                theme_manager.register_widget(self.current_session_label_widget, 'highlighted_accent_label')
+            
+            # Register all title labels
+            if self.total_work_title_label:
+                theme_manager.register_widget(self.total_work_title_label, 'label')
+            if self.break_time_title_label:
+                theme_manager.register_widget(self.break_time_title_label, 'label')
+            if self.productive_time_title_label:
+                theme_manager.register_widget(self.productive_time_title_label, 'label')
+            if self.remaining_title_label:
+                theme_manager.register_widget(self.remaining_title_label, 'label')
+            if self.overtime_title_label:
+                theme_manager.register_widget(self.overtime_title_label, 'label')
+            
+            # Register all value labels
+            if self.total_work_label:
+                theme_manager.register_widget(self.total_work_label, 'label')
+            if self.break_time_label:
+                theme_manager.register_widget(self.break_time_label, 'label')
+            if self.productive_time_label:
+                theme_manager.register_widget(self.productive_time_label, 'label')
+            if self.remaining_label:
+                theme_manager.register_widget(self.remaining_label, 'label')
+            if self.overtime_label:
+                theme_manager.register_widget(self.overtime_label, 'label')
+            
+            self.logger.debug("TimerDisplay widgets registered successfully")
+
+    def _get_status_palette(self):
+        """Resolve the status colors from the active theme."""
+        if self.theme_manager:
+            colors = self.theme_manager.get_theme_colors()
+            return (
+                colors.get('fg_primary', '#000000'),
+                colors.get('warning', '#FF8C00'),
+                colors.get('danger', '#DC143C'),
+                colors.get('success', '#006400')
+            )
+
+        # Fallback palette when theming is unavailable
+        return ('#000000', '#FF8C00', '#DC143C', '#006400')

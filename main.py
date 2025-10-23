@@ -422,9 +422,33 @@ class WorklogApplication:
                     self.system_tray_manager.register_callback("hide_window", self.main_window.hide_window)
                     self.system_tray_manager.register_callback("toggle_window", self.main_window.toggle_window_visibility)
                     
+                    # Register work action callbacks (use tray-specific methods without dialogs)
+                    self.system_tray_manager.register_callback("start_work", self.main_window.start_work_from_tray)
+                    self.system_tray_manager.register_callback("end_work", self.main_window.end_work_from_tray)
+                    self.system_tray_manager.register_callback("take_break", self.main_window.take_break_from_tray)
+                    self.system_tray_manager.register_callback("end_break", self.main_window.resume_work_from_tray)
+                    
+                    # Register utility callbacks
+                    self.system_tray_manager.register_callback("export_data", self.main_window._export_data)
+                    self.system_tray_manager.register_callback("show_summary", self.main_window.show_window)  # Show window to see summary
+
+                    # Configure status monitor hooks for automatic tray updates
+                    if getattr(self.system_tray_manager, "status_monitor", None):
+                        self.system_tray_manager.status_monitor.set_status_callbacks(
+                            self.main_window.get_tray_is_working,
+                            self.main_window.get_tray_is_on_break,
+                            self.main_window.get_tray_work_start_time,
+                        )
+                    
                     self.logger.info("Starting system tray...")
                     if self.system_tray_manager.start_tray():
                         self.logger.info("System tray initialized and started successfully")
+                        # Pass system tray manager reference to main window
+                        self.main_window.system_tray_manager = self.system_tray_manager
+                        if getattr(self.system_tray_manager, "status_monitor", None):
+                            self.system_tray_manager.status_monitor.start_monitoring()
+                        # Sync initial tray status with current worklog state
+                        self.main_window._update_system_tray_status()
                     else:
                         self.logger.warning("System tray could not be started")
                         self.system_tray_manager = None

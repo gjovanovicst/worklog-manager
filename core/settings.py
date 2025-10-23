@@ -107,6 +107,10 @@ class AppearanceSettings:
     window_x: int = 100
     window_y: int = 100
     
+    # Font settings
+    font_family: str = "Arial"
+    font_size: int = 10
+    
     # Display formats
     time_format: TimeFormat = TimeFormat.HOURS_24
     date_format: DateFormat = DateFormat.YMD

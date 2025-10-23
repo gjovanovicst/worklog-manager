@@ -63,6 +63,26 @@ python main.py
 
 *Note: Uses Python standard library only - no external dependencies required for core functionality.*
 
+**For Advanced Features (optional):**
+```bash
+# Install optional dependencies for themes, notifications, system tray
+pip install -r requirements.txt
+```
+
+**Development Mode (with auto-reload):**
+```bash
+# Install watchdog for file watching
+pip install watchdog
+
+# Start in development mode
+python dev_start.py
+# or
+./dev_start.sh  # Linux/Mac
+dev_start.bat   # Windows
+```
+
+When running in development mode, the application automatically restarts whenever you modify any Python file. This is perfect for development and customization work.
+
 ## Usage
 
 ### Daily Workflow

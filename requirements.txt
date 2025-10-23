@@ -49,6 +49,11 @@ dataclasses; python_version < "3.7"
 # Type checking
 # mypy>=0.950
 
+# Development Dependencies (optional for auto-reload):
+# Install with: pip install watchdog
+# Then run with: python dev_start.py
+watchdog>=3.0.0
+
 # Testing framework
 # pytest>=7.0.0
 

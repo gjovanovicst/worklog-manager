@@ -106,6 +106,9 @@ class SystemTrayManager:
         self.work_start_time = None
         self.is_on_break = False
 
+        # Status monitor helper (configurable by application)
+        self.status_monitor = TrayStatusMonitor(self)
+
         # Create default icon
         self.icon_image = self.create_default_icon()
         if self.icon_image is None and not PIL_AVAILABLE:
@@ -354,6 +357,12 @@ class SystemTrayManager:
         """Stop the system tray."""
         self.running = False
         
+        if getattr(self, "status_monitor", None):
+            try:
+                self.status_monitor.stop_monitoring()
+            except Exception as exc:
+                logger.debug("Tray status monitor stop failed: %s", exc)
+
         if self.tray_icon:
             try:
                 self.tray_icon.stop()
@@ -375,16 +384,40 @@ class SystemTrayManager:
         if not PYSTRAY_AVAILABLE:
             return None
         
+        print(f"[SystemTray] Creating menu: current_status='{self.current_status}', is_on_break={self.is_on_break}")
+        
+        # Note: pystray evaluates 'enabled' at menu display time, which is good
+        # The lambda functions will be called each time the menu is shown
+        def can_start_work(item):
+            result = self.current_status not in ("working", "break")
+            print(f"[SystemTray] can_start_work check: current_status='{self.current_status}' -> {result}")
+            return result
+        
+        def can_end_work(item):
+            result = self.current_status in ("working", "break")
+            print(f"[SystemTray] can_end_work check: current_status='{self.current_status}' -> {result}")
+            return result
+        
+        def can_take_break(item):
+            result = self.current_status == "working" and not self.is_on_break
+            print(f"[SystemTray] can_take_break check: status='{self.current_status}', is_on_break={self.is_on_break} -> {result}")
+            return result
+        
+        def can_resume_work(item):
+            result = self.is_on_break
+            print(f"[SystemTray] can_resume_work check: is_on_break={self.is_on_break} -> {result}")
+            return result
+        
         return pystray.Menu(
             Item("Toggle Window", self.toggle_window_action, default=True),
             Item("Show Window", self.show_window),
             Item("Hide Window", self.hide_window),
             pystray.Menu.SEPARATOR,
-            Item("Start Work", self.start_work_action, enabled=lambda item: self.current_status != "working"),
-            Item("End Work", self.end_work_action, enabled=lambda item: self.current_status == "working"),
+            Item("Start Work", self.start_work_action, enabled=can_start_work),
+            Item("End Work", self.end_work_action, enabled=can_end_work),
             pystray.Menu.SEPARATOR,
-            Item("Take Break", self.take_break_action, enabled=lambda item: self.current_status == "working" and not self.is_on_break),
-            Item("End Break", self.end_break_action, enabled=lambda item: self.is_on_break),
+            Item("Take Break", self.take_break_action, enabled=can_take_break),
+            Item("Resume Work", self.end_break_action, enabled=can_resume_work),
             pystray.Menu.SEPARATOR,
             Item("Daily Summary", self.show_summary_action),
             Item("Export Data", self.export_data_action),
@@ -397,7 +430,16 @@ class SystemTrayManager:
     
     def update_status(self, status: str, work_start_time: datetime = None, is_on_break: bool = False):
         """Update the tray icon status."""
+        print(f"[SystemTray] Updating status: status='{status}', is_on_break={is_on_break}")
+        
         self.current_status = status
+
+        if isinstance(work_start_time, str):
+            try:
+                work_start_time = datetime.fromisoformat(work_start_time)
+            except Exception:
+                work_start_time = None
+
         self.work_start_time = work_start_time
         self.is_on_break = is_on_break
         
@@ -413,10 +455,19 @@ class SystemTrayManager:
                 self.tray_icon.title = tooltip
                 
                 # Update menu (recreate to refresh enabled states)
-                self.tray_icon.menu = self.create_tray_menu()
+                print(f"[SystemTray] Recreating menu with status='{self.current_status}', is_on_break={self.is_on_break}")
+                new_menu = self.create_tray_menu()
+                self.tray_icon.menu = new_menu
+                try:
+                    self.tray_icon.update_menu()
+                    print("[SystemTray] Menu updated successfully via update_menu()")
+                except Exception as update_error:
+                    print(f"[SystemTray] update_menu() failed: {update_error}")
                 
             except Exception as e:
                 print(f"Error updating tray status: {e}")
+                import traceback
+                traceback.print_exc()
     
     def get_status_tooltip(self) -> str:
         """Get tooltip text based on current status."""
@@ -443,11 +494,25 @@ class SystemTrayManager:
         
         return tooltip
     
-    def show_notification(self, title: str, message: str, timeout: int = 5):
+    def show_notification(self, title: str, message: str = "", timeout: int = 5):
         """Show a system notification through the tray icon."""
+        if not PYSTRAY_AVAILABLE:
+            return
+
         if self.tray_icon and self.running:
             try:
-                self.tray_icon.notify(message, title)
+                header = self.app_name or "Worklog Manager"
+                body_parts = []
+
+                if title:
+                    body_parts.append(title)
+
+                if message:
+                    body_parts.append(message)
+
+                body = "\n".join(part for part in body_parts if part) or header
+
+                self.tray_icon.notify(body, header)
             except Exception as e:
                 print(f"Error showing notification: {e}")
     
@@ -677,6 +742,7 @@ class TrayStatusMonitor:
         self.tray_manager = tray_manager
         self.monitor_thread = None
         self.running = False
+        self.poll_interval = 10  # seconds between status checks
         
         # Callbacks to get current status
         self.get_work_status = None
@@ -697,6 +763,11 @@ class TrayStatusMonitor:
             return
         
         self.running = True
+        # Perform an initial update so tray state is fresh immediately
+        try:
+            self.force_update()
+        except Exception:
+            pass
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
     
@@ -704,56 +775,69 @@ class TrayStatusMonitor:
         """Stop monitoring application status."""
         self.running = False
         
-        if self.monitor_thread:
+        if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=2)
+        self.monitor_thread = None
+
+    def _coerce_start_time(self, value):
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                return None
+        return None
+
+    def _safe_callback(self, callback: Optional[Callable]):
+        if not callback:
+            return None
+        try:
+            return callback()
+        except Exception as exc:
+            print(f"TrayStatusMonitor callback error: {exc}")
+            return None
+
+    def _collect_status(self):
+        is_working = bool(self._safe_callback(self.get_work_status))
+        is_on_break = bool(self._safe_callback(self.get_break_status))
+        work_start_time_raw = self._safe_callback(self.get_work_start_time)
+        work_start_time = self._coerce_start_time(work_start_time_raw)
+
+        status = "idle"
+        if is_working:
+            if is_on_break:
+                status = "break"
+            else:
+                status = "working"
+                if work_start_time:
+                    elapsed = datetime.now() - work_start_time
+                    if elapsed.total_seconds() > 8 * 3600:
+                        status = "overtime"
+
+        return status, work_start_time, is_on_break
     
     def _monitor_loop(self):
         """Main monitoring loop."""
         while self.running:
             try:
-                # Get current status
-                is_working = False
-                is_on_break = False
-                work_start_time = None
-                
-                if self.get_work_status:
-                    is_working = self.get_work_status()
-                
-                if self.get_break_status:
-                    is_on_break = self.get_break_status()
-                
-                if self.get_work_start_time:
-                    work_start_time = self.get_work_start_time()
-                
-                # Determine status
-                if is_working:
-                    if is_on_break:
-                        status = "break"
-                    else:
-                        # Check for overtime
-                        if work_start_time:
-                            elapsed = datetime.now() - work_start_time
-                            if elapsed.total_seconds() > (8 * 3600):  # More than 8 hours
-                                status = "overtime"
-                            else:
-                                status = "working"
-                        else:
-                            status = "working"
-                else:
-                    status = "idle"
-                
-                # Update tray status
+                status, work_start_time, is_on_break = self._collect_status()
                 self.tray_manager.update_status(status, work_start_time, is_on_break)
                 
-                # Sleep for 30 seconds before next check
-                time.sleep(30)
+                # Sleep before next check, but exit early if stopped
+                for _ in range(self.poll_interval):
+                    if not self.running:
+                        break
+                    time.sleep(1)
                 
             except Exception as e:
                 print(f"Error in tray status monitor: {e}")
-                time.sleep(60)  # Wait longer on error
+                time.sleep(max(self.poll_interval, 30))
     
     def force_update(self):
         """Force an immediate status update."""
-        if self.running and self.monitor_thread:
-            # This will cause the next iteration of the loop to run sooner
-            pass
+        try:
+            status, work_start_time, is_on_break = self._collect_status()
+            self.tray_manager.update_status(status, work_start_time, is_on_break)
+        except Exception as exc:
+            print(f"TrayStatusMonitor force update failed: {exc}")

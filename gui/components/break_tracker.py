@@ -22,6 +22,16 @@ class BreakTracker(ttk.Frame):
         self.logger = logging.getLogger(__name__)
         self.time_calculator = TimeCalculator()
         
+        # Store references to themed widgets
+        self.lunch_frame = None
+        self.lunch_labels = []
+        self.coffee_frame = None
+        self.coffee_labels = []
+        self.general_frame = None
+        self.general_labels = []
+        self.breaks_listbox = None
+        self.header_labels = []
+        
         self._create_widgets()
         self._break_periods: List[BreakPeriod] = []
     
@@ -47,12 +57,13 @@ class BreakTracker(ttk.Frame):
         summary_frame.pack(fill="x", pady=(0, 10))
         
         # Headers
-        tk.Label(summary_frame, text="Break Type", font=("Arial", 9, "bold")).grid(
-            row=0, column=0, sticky="w", padx=(0, 20))
-        tk.Label(summary_frame, text="Count", font=("Arial", 9, "bold")).grid(
-            row=0, column=1, sticky="w", padx=(0, 20))
-        tk.Label(summary_frame, text="Total Time", font=("Arial", 9, "bold")).grid(
-            row=0, column=2, sticky="w")
+        header1 = tk.Label(summary_frame, text="Break Type", font=("Arial", 9, "bold"))
+        header1.grid(row=0, column=0, sticky="w", padx=(0, 20))
+        header2 = tk.Label(summary_frame, text="Count", font=("Arial", 9, "bold"))
+        header2.grid(row=0, column=1, sticky="w", padx=(0, 20))
+        header3 = tk.Label(summary_frame, text="Total Time", font=("Arial", 9, "bold"))
+        header3.grid(row=0, column=2, sticky="w")
+        self.header_labels = [header1, header2, header3]
         
         # Break type rows
         zero_time = self.time_calculator.format_duration_with_seconds(0)
@@ -64,31 +75,43 @@ class BreakTracker(ttk.Frame):
         self.general_time_var = tk.StringVar(value=zero_time)
         
         # Lunch breaks
-        lunch_frame = tk.Frame(summary_frame, bg="#FFE4B5", relief="ridge", bd=1)
-        lunch_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=1)
-        lunch_frame.columnconfigure(2, weight=1)
+        self.lunch_frame = tk.Frame(summary_frame, relief="ridge", bd=1)
+        self.lunch_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=1)
+        self.lunch_frame.columnconfigure(2, weight=1)
         
-        tk.Label(lunch_frame, text="[L] Lunch", bg="#FFE4B5").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        tk.Label(lunch_frame, textvariable=self.lunch_count_var, bg="#FFE4B5").grid(row=0, column=1, padx=20, pady=2)
-        tk.Label(lunch_frame, textvariable=self.lunch_time_var, bg="#FFE4B5").grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        lunch_label1 = tk.Label(self.lunch_frame, text="[L] Lunch")
+        lunch_label1.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        lunch_label2 = tk.Label(self.lunch_frame, textvariable=self.lunch_count_var)
+        lunch_label2.grid(row=0, column=1, padx=20, pady=2)
+        lunch_label3 = tk.Label(self.lunch_frame, textvariable=self.lunch_time_var)
+        lunch_label3.grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        self.lunch_labels = [lunch_label1, lunch_label2, lunch_label3]
         
         # Coffee breaks
-        coffee_frame = tk.Frame(summary_frame, bg="#D2B48C", relief="ridge", bd=1)
-        coffee_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=1)
-        coffee_frame.columnconfigure(2, weight=1)
+        self.coffee_frame = tk.Frame(summary_frame, relief="ridge", bd=1)
+        self.coffee_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=1)
+        self.coffee_frame.columnconfigure(2, weight=1)
         
-        tk.Label(coffee_frame, text="[C] Coffee", bg="#D2B48C").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        tk.Label(coffee_frame, textvariable=self.coffee_count_var, bg="#D2B48C").grid(row=0, column=1, padx=20, pady=2)
-        tk.Label(coffee_frame, textvariable=self.coffee_time_var, bg="#D2B48C").grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        coffee_label1 = tk.Label(self.coffee_frame, text="[C] Coffee")
+        coffee_label1.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        coffee_label2 = tk.Label(self.coffee_frame, textvariable=self.coffee_count_var)
+        coffee_label2.grid(row=0, column=1, padx=20, pady=2)
+        coffee_label3 = tk.Label(self.coffee_frame, textvariable=self.coffee_time_var)
+        coffee_label3.grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        self.coffee_labels = [coffee_label1, coffee_label2, coffee_label3]
         
         # General breaks
-        general_frame = tk.Frame(summary_frame, bg="#F0F0F0", relief="ridge", bd=1)
-        general_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=1)
-        general_frame.columnconfigure(2, weight=1)
+        self.general_frame = tk.Frame(summary_frame, relief="ridge", bd=1)
+        self.general_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=1)
+        self.general_frame.columnconfigure(2, weight=1)
         
-        tk.Label(general_frame, text="[B] General", bg="#F0F0F0").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        tk.Label(general_frame, textvariable=self.general_count_var, bg="#F0F0F0").grid(row=0, column=1, padx=20, pady=2)
-        tk.Label(general_frame, textvariable=self.general_time_var, bg="#F0F0F0").grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        general_label1 = tk.Label(self.general_frame, text="[B] General")
+        general_label1.grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        general_label2 = tk.Label(self.general_frame, textvariable=self.general_count_var)
+        general_label2.grid(row=0, column=1, padx=20, pady=2)
+        general_label3 = tk.Label(self.general_frame, textvariable=self.general_time_var)
+        general_label3.grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        self.general_labels = [general_label1, general_label2, general_label3]
         
         summary_frame.columnconfigure(0, weight=1)
     
@@ -233,3 +256,37 @@ class BreakTracker(ttk.Frame):
             },
             'total_time': sum(b.duration_minutes or 0 for b in self._break_periods)
         }
+    
+    def register_with_theme_manager(self, theme_manager):
+        """Register widgets with the theme manager for theme updates.
+        
+        Args:
+            theme_manager: ThemeManager instance
+        """
+        if theme_manager:
+            self.logger.debug("Registering BreakTracker widgets with theme manager")
+            # Register header labels
+            for header in self.header_labels:
+                theme_manager.register_widget(header, 'label')
+            
+            # Register break frames with subtle backgrounds
+            if self.lunch_frame:
+                theme_manager.register_widget(self.lunch_frame, 'break_lunch_bg')
+            if self.coffee_frame:
+                theme_manager.register_widget(self.coffee_frame, 'break_coffee_bg')
+            if self.general_frame:
+                theme_manager.register_widget(self.general_frame, 'break_general_bg')
+            
+            # Register labels for each break type
+            for label in self.lunch_labels:
+                theme_manager.register_widget(label, 'break_lunch_label')
+            for label in self.coffee_labels:
+                theme_manager.register_widget(label, 'break_coffee_label')
+            for label in self.general_labels:
+                theme_manager.register_widget(label, 'break_general_label')
+            
+            # Register listbox
+            if self.breaks_listbox:
+                theme_manager.register_widget(self.breaks_listbox, 'listbox')
+            
+            self.logger.debug("BreakTracker widgets registered successfully")

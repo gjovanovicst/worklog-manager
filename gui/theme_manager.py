@@ -29,6 +29,7 @@ class ThemeColors:
         'info': '#17a2b8',
         'button_bg': '#f8f9fa',
         'button_active': '#e9ecef',
+        'button_fg': '#1a1a1a',
         'entry_bg': '#ffffff',
         'entry_fg': '#2c2c2c',
         'selected': '#007bff',
@@ -47,8 +48,9 @@ class ThemeColors:
         'warning': '#f7c75a',
         'danger': '#f26f7c',
         'info': '#63c6f5',
-    'button_bg': '#2f3a52',
-    'button_active': '#3a4660',
+        'button_bg': '#2f3a52',
+        'button_active': '#3a4660',
+        'button_fg': '#e8ecf4',
         'entry_bg': '#1d2432',
         'entry_fg': '#f4f7fb',
         'selected': '#556bff',
@@ -69,6 +71,7 @@ class ThemeColors:
         'info': '#4ad9ff',
         'button_bg': '#1d2433',
         'button_active': '#263044',
+        'button_fg': '#ffffff',
         'entry_bg': '#141926',
         'entry_fg': '#ffffff',
         'selected': '#ffb454',
@@ -78,14 +81,18 @@ class ThemeColors:
 class ThemeManager:
     """Manages application themes and styling."""
     
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, initial_theme: str = 'light'):
         self.root = root
-        self.current_theme = 'light'
+        self.current_theme = initial_theme
         self.custom_themes = {}
         self.styled_widgets = []
         
-        # Load custom themes if they exist
+        # Load custom themes if they exist (before applying colors)
         self.load_custom_themes()
+        
+        # Apply initial background color immediately to prevent flash
+        colors = self.get_theme_colors(initial_theme)
+        self.root.configure(bg=colors['bg_primary'])
         
         # Configure ttk styles
         self.style = ttk.Style()
@@ -93,10 +100,22 @@ class ThemeManager:
         self.configure_ttk_styles()
 
     def _initialize_base_theme(self):
-        """Select a ttk theme that allows color customization."""
+        """Select a ttk theme that allows color customization.
+        
+        Prefers light-themed bases when using light theme to avoid dark flashes.
+        """
         try:
             available = set(self.style.theme_names())
-            for candidate in ('sun-valley-dark', 'sun-valley', 'azure', 'clam', 'alt'):
+            
+            # Select base theme based on current theme preference
+            if self.current_theme == 'dark' or self.current_theme == 'high_contrast':
+                # For dark themes, prefer dark bases
+                preferred = ('sun-valley-dark', 'azure', 'clam', 'alt', 'sun-valley')
+            else:
+                # For light themes, prefer light bases to avoid dark flashing
+                preferred = ('sun-valley', 'azure', 'clam', 'alt')
+            
+            for candidate in preferred:
                 if candidate in available:
                     self.style.theme_use(candidate)
                     return
@@ -157,6 +176,78 @@ class ThemeManager:
         for widget_info in self.styled_widgets:
             self.apply_widget_theme(widget_info['widget'], widget_info['style'], colors)
     
+    def apply_fonts(self, font_family: str = "Arial", font_size: int = 10):
+        """Apply font settings globally to the entire application.
+        
+        Args:
+            font_family: Font family name (e.g., 'Arial', 'Helvetica')
+            font_size: Base font size in points
+        """
+        # Configure default fonts for tk widgets
+        default_font = (font_family, font_size)
+        bold_font = (font_family, font_size, 'bold')
+        
+        # Update tk default fonts
+        self.root.option_add("*Font", default_font)
+        self.root.option_add("*Label.Font", default_font)
+        self.root.option_add("*Button.Font", default_font)
+        self.root.option_add("*Entry.Font", default_font)
+        self.root.option_add("*Text.Font", default_font)
+        self.root.option_add("*Listbox.Font", default_font)
+        self.root.option_add("*Menu.Font", default_font)
+        self.root.option_add("*Menubutton.Font", default_font)
+        
+        # Update ttk styles with fonts
+        self.style.configure('TLabel', font=default_font)
+        self.style.configure('TButton', font=default_font)
+        self.style.configure('Themed.TButton', font=default_font)
+        self.style.configure('TEntry', font=default_font)
+        self.style.configure('TCheckbutton', font=default_font)
+        self.style.configure('TRadiobutton', font=default_font)
+        self.style.configure('TCombobox', font=default_font)
+        self.style.configure('Treeview', font=default_font)
+        self.style.configure('Treeview.Heading', font=bold_font)
+        self.style.configure('TNotebook.Tab', font=default_font)
+        self.style.configure('TLabelframe', font=default_font)
+        self.style.configure('TLabelframe.Label', font=bold_font)
+        self.style.configure('TSpinbox', font=default_font)
+        
+        # Force update all widgets recursively
+        self._update_widget_fonts_recursive(self.root, font_family, font_size)
+    
+    def _update_widget_fonts_recursive(self, widget, font_family: str, font_size: int):
+        """Recursively update fonts for all widgets in the tree.
+        
+        Args:
+            widget: Root widget to start from
+            font_family: Font family name
+            font_size: Base font size
+        """
+        try:
+            # Try to update the widget's font if it has one
+            if hasattr(widget, 'configure') or hasattr(widget, 'config'):
+                try:
+                    # Check if widget has a font option
+                    current_font = widget.cget('font') if hasattr(widget, 'cget') else None
+                    if current_font:
+                        # Preserve bold/italic if present
+                        if isinstance(current_font, tuple) and len(current_font) >= 3:
+                            new_font = (font_family, font_size, current_font[2])
+                        elif isinstance(current_font, str) and 'bold' in current_font.lower():
+                            new_font = (font_family, font_size, 'bold')
+                        else:
+                            new_font = (font_family, font_size)
+                        widget.configure(font=new_font)
+                except (tk.TclError, AttributeError):
+                    pass  # Widget doesn't support font configuration
+            
+            # Recursively process children
+            if hasattr(widget, 'winfo_children'):
+                for child in widget.winfo_children():
+                    self._update_widget_fonts_recursive(child, font_family, font_size)
+        except Exception:
+            pass  # Ignore any errors during font update
+    
     def configure_ttk_styles(self):
         """Configure initial ttk styles."""
         colors = self.get_theme_colors()
@@ -166,11 +257,14 @@ class ThemeManager:
         """Update ttk styles with current theme colors."""
 
         disabled_bg = self.darken_color(colors['button_bg'], 0.85)
+        
+        # Use explicit button_fg if available, otherwise calculate contrast
+        button_text_color = colors.get('button_fg', self.get_contrast_text_color(colors['button_bg'], colors))
 
         self.style.configure(
             'Themed.TButton',
             background=colors['button_bg'],
-            foreground=colors['fg_primary'],
+            foreground=button_text_color,
             bordercolor=colors['border'],
             borderwidth=0,
             padding=(10, 6),
@@ -190,7 +284,7 @@ class ThemeManager:
         self.style.configure(
             'TButton',
             background=colors['button_bg'],
-            foreground=colors['fg_primary'],
+            foreground=button_text_color,
             bordercolor=colors['border'],
             borderwidth=0,
             padding=(10, 6),
@@ -210,6 +304,7 @@ class ThemeManager:
         def configure_action_button(style_name: str, base_color: str, text_color: str = None):
             """Configure a custom action button style with consistent states."""
             if not text_color:
+                # Calculate contrast text color based on button background brightness
                 text_color = self.get_contrast_text_color(base_color, colors)
 
             active_color = self.lighten_color(base_color, 1.08)
@@ -423,15 +518,24 @@ class ThemeManager:
             background=colors['bg_primary'],
             foreground=colors['fg_primary'],
             bordercolor=colors['border'],
-            focuscolor='none',
+            focuscolor=colors['selected'],
             indicatorbackground=colors['button_bg'],
+            indicatorforeground=colors['selected'],
             indicatorrelief='flat'
         )
 
         self.style.map(
             'TCheckbutton',
             background=[('active', colors['bg_secondary'])],
-            foreground=[('disabled', colors['fg_secondary'])]
+            foreground=[('disabled', colors['fg_secondary'])],
+            indicatorforeground=[
+                ('selected', colors['selected']),
+                ('!selected', colors['fg_secondary'])
+            ],
+            indicatorbackground=[
+                ('selected', colors['button_bg']),
+                ('!selected', colors['button_bg'])
+            ]
         )
 
         self.style.configure(
@@ -439,15 +543,24 @@ class ThemeManager:
             background=colors['bg_primary'],
             foreground=colors['fg_primary'],
             bordercolor=colors['border'],
-            focuscolor='none',
+            focuscolor=colors['selected'],
             indicatorbackground=colors['button_bg'],
+            indicatorforeground=colors['selected'],
             indicatorrelief='flat'
         )
 
         self.style.map(
             'TRadiobutton',
             background=[('active', colors['bg_secondary'])],
-            foreground=[('disabled', colors['fg_secondary'])]
+            foreground=[('disabled', colors['fg_secondary'])],
+            indicatorforeground=[
+                ('selected', colors['selected']),
+                ('!selected', colors['fg_secondary'])
+            ],
+            indicatorbackground=[
+                ('selected', colors['button_bg']),
+                ('!selected', colors['button_bg'])
+            ]
         )
 
         self.style.configure(
@@ -468,6 +581,23 @@ class ThemeManager:
                 ('readonly', readonly_bg),
                 ('disabled', disabled_bg)
             ],
+            foreground=[('disabled', colors['fg_secondary'])],
+            background=[('disabled', disabled_bg)]
+        )
+
+        # TSpinbox styling
+        self.style.configure(
+            'TSpinbox',
+            fieldbackground=colors['entry_bg'],
+            background=colors['entry_bg'],
+            foreground=colors['entry_fg'],
+            arrowcolor=colors['fg_secondary'],
+            bordercolor=colors['border']
+        )
+
+        self.style.map(
+            'TSpinbox',
+            fieldbackground=[('disabled', disabled_bg)],
             foreground=[('disabled', colors['fg_secondary'])],
             background=[('disabled', disabled_bg)]
         )
@@ -622,6 +752,103 @@ class ThemeManager:
                         activebackground=colors['selected'],
                         activeforeground=colors['selected_text']
                     )
+            elif style == 'label':
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_primary'],
+                        fg=colors['fg_primary']
+                    )
+            elif style == 'highlighted_bg':
+                # Special highlighted background for current session frame
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_tertiary'],
+                        relief='ridge',
+                        bd=1
+                    )
+            elif style == 'highlighted_label':
+                # Label on highlighted background
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_tertiary'],
+                        fg=colors['fg_primary']
+                    )
+            elif style == 'highlighted_accent_label':
+                # Accented label on highlighted background
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_tertiary'],
+                        fg=colors['fg_accent']
+                    )
+            elif style == 'break_lunch_bg':
+                # Lunch break frame background
+                if is_ttk_widget:
+                    pass
+                else:
+                    bg_color = self.blend_colors(colors['bg_secondary'], colors['warning'], 0.10)
+                    widget.configure(
+                        bg=bg_color,
+                        relief='ridge',
+                        bd=1
+                    )
+            elif style == 'break_lunch_label':
+                # Label for lunch breaks
+                if is_ttk_widget:
+                    pass
+                else:
+                    bg_color = self.blend_colors(colors['bg_secondary'], colors['warning'], 0.10)
+                    widget.configure(
+                        bg=bg_color,
+                        fg=colors['fg_primary']
+                    )
+            elif style == 'break_coffee_bg':
+                # Coffee break frame background
+                if is_ttk_widget:
+                    pass
+                else:
+                    bg_color = self.blend_colors(colors['bg_secondary'], colors['info'], 0.08)
+                    widget.configure(
+                        bg=bg_color,
+                        relief='ridge',
+                        bd=1
+                    )
+            elif style == 'break_coffee_label':
+                # Label for coffee breaks
+                if is_ttk_widget:
+                    pass
+                else:
+                    bg_color = self.blend_colors(colors['bg_secondary'], colors['info'], 0.08)
+                    widget.configure(
+                        bg=bg_color,
+                        fg=colors['fg_primary']
+                    )
+            elif style == 'break_general_bg':
+                # General break frame background
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_secondary'],
+                        relief='ridge',
+                        bd=1
+                    )
+            elif style == 'break_general_label':
+                # Label for general breaks
+                if is_ttk_widget:
+                    pass
+                else:
+                    widget.configure(
+                        bg=colors['bg_secondary'],
+                        fg=colors['fg_primary']
+                    )
             else:  # default
                 if hasattr(widget, 'configure') and not is_ttk_widget:
                     widget.configure(bg=colors['bg_primary'], fg=colors['fg_primary'])
@@ -682,6 +909,42 @@ class ThemeManager:
         except:
             return color
 
+    def blend_colors(self, color1: str, color2: str, factor: float = 0.5) -> str:
+        """Blend two colors together.
+        
+        Args:
+            color1: First color (hex)
+            color2: Second color (hex)
+            factor: Blend factor (0.0 = all color1, 1.0 = all color2)
+        
+        Returns:
+            Blended color as hex string
+        """
+        if color1.startswith('#'):
+            color1 = color1[1:]
+        if color2.startswith('#'):
+            color2 = color2[1:]
+        
+        try:
+            # Convert hex to RGB
+            r1 = int(color1[0:2], 16)
+            g1 = int(color1[2:4], 16)
+            b1 = int(color1[4:6], 16)
+            
+            r2 = int(color2[0:2], 16)
+            g2 = int(color2[2:4], 16)
+            b2 = int(color2[4:6], 16)
+            
+            # Blend
+            r = int(r1 * (1 - factor) + r2 * factor)
+            g = int(g1 * (1 - factor) + g2 * factor)
+            b = int(b1 * (1 - factor) + b2 * factor)
+            
+            # Convert back to hex
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except:
+            return color1 if color1 else color2
+
     def get_contrast_text_color(self, background_color: str, colors: Dict[str, str]) -> str:
         """Choose a contrasting text color based on background brightness."""
         hex_color = background_color.lstrip('#')
@@ -693,11 +956,14 @@ class ThemeManager:
 
             luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
 
-            if luminance < 0.55:
-                return colors.get('selected_text', '#ffffff')
-            return colors.get('fg_primary', '#000000')
+            # For lighter backgrounds, use dark text
+            # For darker backgrounds, use light text
+            if luminance > 0.5:
+                return '#1a1a1a'  # Dark text for light backgrounds
+            else:
+                return colors.get('selected_text', '#ffffff')  # Light text for dark backgrounds
         except Exception:
-            return colors.get('fg_primary', '#000000')
+            return '#1a1a1a'
     
     def create_custom_theme(self, name: str, base_theme: str = 'light', 
                           color_overrides: Dict[str, str] = None):
@@ -774,61 +1040,87 @@ class ThemePreview:
         self.theme_manager = theme_manager
         self.preview_widgets = []
         
-        self.preview_frame = tk.Frame(parent)
+        # Get current theme colors to apply immediately
+        colors = self.theme_manager.get_theme_colors()
+        
+        self.preview_frame = tk.Frame(parent, bg=colors['bg_primary'])
         self.preview_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
         self.create_preview_elements()
+        
+        # Apply current theme immediately to all preview widgets
+        self.update_preview(self.theme_manager.current_theme)
     
     def create_preview_elements(self):
         """Create sample elements for theme preview."""
+        # Get current theme colors
+        colors = self.theme_manager.get_theme_colors()
+        
         # Title
         title_label = tk.Label(self.preview_frame, text="Theme Preview", 
-                              font=('Arial', 14, 'bold'))
+                              font=('Arial', 14, 'bold'),
+                              bg=colors['bg_primary'], fg=colors['fg_primary'])
         title_label.pack(pady=(0, 10))
         
         # Buttons frame
-        buttons_frame = tk.Frame(self.preview_frame)
+        buttons_frame = tk.Frame(self.preview_frame, bg=colors['bg_primary'])
         buttons_frame.pack(fill='x', pady=5)
         
         # Sample buttons
-        normal_btn = tk.Button(buttons_frame, text="Normal Button")
+        normal_btn = tk.Button(buttons_frame, text="Normal Button",
+                              bg=colors['button_bg'], fg=colors['fg_primary'],
+                              relief='flat', bd=0, highlightthickness=0)
         normal_btn.pack(side='left', padx=5)
         
-        success_btn = tk.Button(buttons_frame, text="Success Button")
+        success_btn = tk.Button(buttons_frame, text="Success Button",
+                               bg=colors['success'], fg=colors['selected_text'],
+                               relief='flat', bd=0)
         success_btn.pack(side='left', padx=5)
         
-        danger_btn = tk.Button(buttons_frame, text="Danger Button")
+        danger_btn = tk.Button(buttons_frame, text="Danger Button",
+                              bg=colors['danger'], fg=colors['selected_text'],
+                              relief='flat', bd=0)
         danger_btn.pack(side='left', padx=5)
         
         # Entry field
-        entry_frame = tk.Frame(self.preview_frame)
+        entry_frame = tk.Frame(self.preview_frame, bg=colors['bg_primary'])
         entry_frame.pack(fill='x', pady=5)
         
-        tk.Label(entry_frame, text="Sample Entry:").pack(side='left')
-        sample_entry = tk.Entry(entry_frame)
+        entry_label = tk.Label(entry_frame, text="Sample Entry:",
+                              bg=colors['bg_primary'], fg=colors['fg_primary'])
+        entry_label.pack(side='left')
+        sample_entry = tk.Entry(entry_frame,
+                               bg=colors['entry_bg'], fg=colors['entry_fg'],
+                               insertbackground=colors['fg_primary'])
         sample_entry.pack(side='left', padx=(5, 0), fill='x', expand=True)
         sample_entry.insert(0, "Sample text input")
         
         # Text area
-        text_frame = tk.Frame(self.preview_frame)
+        text_frame = tk.Frame(self.preview_frame, bg=colors['bg_primary'])
         text_frame.pack(fill='both', expand=True, pady=5)
         
-        tk.Label(text_frame, text="Sample Text Area:").pack(anchor='w')
-        sample_text = tk.Text(text_frame, height=4)
+        text_label = tk.Label(text_frame, text="Sample Text Area:",
+                             bg=colors['bg_primary'], fg=colors['fg_primary'])
+        text_label.pack(anchor='w')
+        sample_text = tk.Text(text_frame, height=4,
+                             bg=colors['bg_secondary'], fg=colors['fg_primary'],
+                             insertbackground=colors['fg_primary'])
         sample_text.pack(fill='both', expand=True)
         sample_text.insert('1.0', "This is a sample text area\nShowing how text appears\nIn the selected theme")
 
         # Keep track of widgets for preview styling only
         self.preview_widgets.extend([
             (self.preview_frame, 'primary_bg'),
-            (title_label, 'primary_bg'),
+            (title_label, 'label'),
             (buttons_frame, 'primary_bg'),
             (normal_btn, 'button'),
             (success_btn, 'success_button'),
             (danger_btn, 'danger_button'),
             (entry_frame, 'primary_bg'),
+            (entry_label, 'label'),
             (sample_entry, 'entry'),
             (text_frame, 'primary_bg'),
+            (text_label, 'label'),
             (sample_text, 'text')
         ])
     

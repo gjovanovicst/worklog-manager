@@ -3,10 +3,30 @@
 ## 🚀 Getting Started
 
 ### 1. Launch the Application
+
+**Normal Mode:**
 ```bash
 cd c:\work\worklog-manager
 python main.py
 ```
+
+**Development Mode (with auto-reload):**
+```bash
+# Install watchdog first (one time only)
+pip install watchdog
+
+# Then start in development mode
+python dev_start.py
+
+# Or use the convenience scripts:
+# Windows:
+dev_start.bat
+
+# Linux/Mac:
+./dev_start.sh
+```
+
+The development mode will automatically restart the application whenever you change any Python file in the project. This is useful when developing or customizing the application.
 
 ### 2. Start Your Work Day
 1. Click **"Start Day"** button

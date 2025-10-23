@@ -43,6 +43,7 @@ class SettingsDialog:
         self.on_settings_changed = on_settings_changed
         self.initial_theme = theme_manager.current_theme if theme_manager else None
         self.theme_applied = False
+        self._saving = False  # Flag to prevent concurrent saves
         
         # Load current settings (force reload to get latest values)
         self.settings_manager.load_settings()  # Ensure settings are loaded
@@ -62,6 +63,11 @@ class SettingsDialog:
         self.dialog.geometry("800x600")
         self.dialog.resizable(True, True)
         self.dialog.minsize(600, 400)  # Set minimum size
+        
+        # Apply theme background to dialog
+        if self.theme_manager:
+            colors = self.theme_manager.get_theme_colors()
+            self.dialog.configure(bg=colors['bg_primary'])
         
         # Make dialog modal
         self.dialog.transient(self.parent)
@@ -118,13 +124,15 @@ class SettingsDialog:
         
         ttk.Button(right_frame, text="Cancel", command=self.cancel_settings, style="Themed.TButton").pack(side='right', padx=(5, 0))
         ttk.Button(right_frame, text="Apply", command=self.apply_settings, style="Themed.TButton").pack(side='right', padx=(5, 0))
-        ttk.Button(right_frame, text="Save", command=self.save_settings, style="Themed.TButton").pack(side='right', padx=(5, 0))
         ttk.Button(right_frame, text="OK", command=self.ok_settings, style="Themed.TButton").pack(side='right', padx=(5, 0))
     
     def create_scrollable_frame(self, parent):
         """Create a scrollable frame with mouse wheel support."""
-        # Create canvas and scrollbar
-        canvas = tk.Canvas(parent, highlightthickness=0)
+        # Get current theme colors
+        colors = self.theme_manager.get_theme_colors() if self.theme_manager else {'bg_primary': '#ffffff'}
+        
+        # Create canvas and scrollbar with themed background
+        canvas = tk.Canvas(parent, highlightthickness=0, bg=colors['bg_primary'])
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         
@@ -295,7 +303,7 @@ class SettingsDialog:
         
         # Font family
         ttk.Label(font_group, text="Font family:").grid(row=0, column=0, sticky='w', pady=2)
-        font_var = tk.StringVar(value="Arial")  # Default font family
+        font_var = tk.StringVar(value=self.settings.appearance.font_family)
         font_combo = ttk.Combobox(font_group, textvariable=font_var)
         font_combo['values'] = ['Arial', 'Helvetica', 'Times New Roman', 'Courier New', 'Verdana', 'Tahoma']
         font_combo.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=2)
@@ -303,7 +311,7 @@ class SettingsDialog:
         
         # Font size
         ttk.Label(font_group, text="Font size:").grid(row=1, column=0, sticky='w', pady=2)
-        font_size_var = tk.IntVar(value=10)  # Default font size
+        font_size_var = tk.IntVar(value=self.settings.appearance.font_size)
         ttk.Spinbox(font_group, from_=8, to=24, increment=1, 
                    textvariable=font_size_var, width=10).grid(row=1, column=1, sticky='w', padx=(10, 0), pady=2)
         self.tabs['appearance']['font_size'] = font_size_var
@@ -750,7 +758,13 @@ class SettingsDialog:
     
     def apply_settings(self):
         """Apply the current settings without closing the dialog."""
+        # Prevent concurrent saves
+        if self._saving:
+            return
+            
         try:
+            self._saving = True
+            
             # Update settings object with current values
             self.update_settings_object()
             
@@ -760,19 +774,46 @@ class SettingsDialog:
             # Refresh our reference to settings after save
             self.settings = self.settings_manager.settings
             
-            # Notify parent of changes
-            if self.on_settings_changed:
-                self.on_settings_changed(self.settings)
+            # Apply theme to settings dialog immediately if theme changed
+            if self.theme_manager and 'appearance' in self.tabs:
+                new_theme = self.tabs['appearance']['theme'].get()
+                if new_theme != self.theme_manager.current_theme:
+                    # Apply theme to main window through callback first
+                    if self.on_settings_changed:
+                        self.on_settings_changed(self.settings)
+                    # Now apply to this dialog window
+                    self.apply_theme_to_dialog(new_theme)
+                else:
+                    # Theme unchanged, just notify parent
+                    if self.on_settings_changed:
+                        self.on_settings_changed(self.settings)
+            else:
+                # No theme manager or appearance tab, just notify parent
+                if self.on_settings_changed:
+                    self.on_settings_changed(self.settings)
+            
             self.theme_applied = True
             
             messagebox.showinfo("Settings Applied", "Settings have been applied successfully.")
             
         except Exception as e:
             messagebox.showerror("Error", f"Error applying settings:\n{str(e)}")
+        finally:
+            self._saving = False
     
     def save_settings(self):
-        """Save the current settings without showing confirmation message."""
+        """Save the current settings without showing confirmation message.
+        
+        Note: This is an internal method. UI buttons use apply_settings() or ok_settings().
+        Kept for internal use and potential future programmatic settings saves.
+        """
+        # Prevent concurrent saves
+        if self._saving:
+            return
+            
         try:
+            self._saving = True
+            
             # Update settings object with current values
             self.update_settings_object()
             
@@ -789,6 +830,8 @@ class SettingsDialog:
                 
         except Exception as e:
             messagebox.showerror("Error", f"Error saving settings:\n{str(e)}")
+        finally:
+            self._saving = False
     
     def ok_settings(self):
         """Apply settings and close the dialog."""
@@ -884,6 +927,11 @@ class SettingsDialog:
                 if theme_enum.value == theme_value:
                     self.settings.appearance.theme = theme_enum
                     break
+            # Font settings
+            if 'font_family' in ap:
+                self.settings.appearance.font_family = ap['font_family'].get()
+            if 'font_size' in ap:
+                self.settings.appearance.font_size = ap['font_size'].get()
             # Window settings
             if 'window_width' in ap:
                 self.settings.appearance.window_width = ap['window_width'].get()
@@ -891,7 +939,6 @@ class SettingsDialog:
                 self.settings.appearance.window_height = ap['window_height'].get()
             if 'window_maximized' in ap:
                 self.settings.appearance.window_maximized = ap['window_maximized'].get()
-            # Note: font_family and font_size are not stored in settings yet
             self.settings.appearance.remember_window_position = ap['remember_position'].get()
             self.settings.appearance.remember_window_position = ap['remember_size'].get()
         
@@ -965,6 +1012,11 @@ class SettingsDialog:
             if hasattr(theme_value, 'value'):
                 theme_value = theme_value.value
             ap['theme'].set(theme_value)
+            # Font settings
+            if 'font_family' in ap:
+                ap['font_family'].set(settings.appearance.font_family)
+            if 'font_size' in ap:
+                ap['font_size'].set(settings.appearance.font_size)
             # Window settings
             if 'window_width' in ap:
                 ap['window_width'].set(settings.appearance.window_width)
@@ -972,9 +1024,6 @@ class SettingsDialog:
                 ap['window_height'].set(settings.appearance.window_height)
             if 'window_maximized' in ap:
                 ap['window_maximized'].set(settings.appearance.window_maximized)
-            # Note: font settings use defaults as they're not stored yet
-            ap['font_family'].set("Arial")
-            ap['font_size'].set(10)
             ap['remember_position'].set(settings.appearance.remember_window_position)
             ap['remember_size'].set(settings.appearance.remember_window_position)
         
@@ -1026,3 +1075,84 @@ class SettingsDialog:
             gn['save_on_exit'].set(settings.general.save_on_exit)
             gn['language'].set(settings.general.language)
             gn['date_format'].set(settings.general.date_format)
+    
+    def apply_theme_to_dialog(self, theme_name: str):
+        """Apply theme colors to all widgets in the settings dialog.
+        
+        Args:
+            theme_name: Name of the theme to apply
+        """
+        if not self.theme_manager:
+            return
+        
+        # Get theme colors
+        colors = self.theme_manager.get_theme_colors(theme_name)
+        
+        # Apply to dialog window
+        try:
+            self.dialog.configure(bg=colors['bg_primary'])
+        except:
+            pass
+        
+        # Recursively apply to all child widgets
+        self._apply_theme_recursive(self.dialog, colors)
+        
+        # Force update
+        self.dialog.update_idletasks()
+    
+    def _apply_theme_recursive(self, widget, colors: dict):
+        """Recursively apply theme to a widget and its children.
+        
+        Args:
+            widget: The widget to theme
+            colors: Dictionary of theme colors
+        """
+        try:
+            # Determine widget type and apply appropriate styling
+            widget_class = widget.winfo_class()
+            
+            # Handle tk widgets
+            if widget_class in ('Frame', 'Toplevel'):
+                widget.configure(bg=colors['bg_primary'])
+            elif widget_class == 'Label':
+                widget.configure(bg=colors['bg_primary'], fg=colors['fg_primary'])
+            elif widget_class == 'Button':
+                widget.configure(
+                    bg=colors['button_bg'],
+                    fg=colors['button_fg'],
+                    activebackground=colors['button_active'],
+                    activeforeground=colors['button_fg']
+                )
+            elif widget_class == 'Entry':
+                widget.configure(
+                    bg=colors['entry_bg'],
+                    fg=colors['entry_fg'],
+                    insertbackground=colors['fg_primary']
+                )
+            elif widget_class == 'Text':
+                widget.configure(
+                    bg=colors['bg_secondary'],
+                    fg=colors['fg_primary'],
+                    insertbackground=colors['fg_primary']
+                )
+            elif widget_class == 'Listbox':
+                widget.configure(
+                    bg=colors['bg_secondary'],
+                    fg=colors['fg_primary']
+                )
+            elif widget_class == 'Canvas':
+                widget.configure(bg=colors['bg_primary'])
+            elif widget_class in ('TFrame', 'TLabelframe'):
+                # ttk widgets use styles, but we can set background
+                try:
+                    widget.configure(style='Themed.TFrame')
+                except:
+                    pass
+            
+            # Recursively process children
+            for child in widget.winfo_children():
+                self._apply_theme_recursive(child, colors)
+                
+        except Exception as e:
+            # Silently ignore widgets that can't be configured
+            pass

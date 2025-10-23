@@ -3,7 +3,7 @@
 import os
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
-from datetime import date
+from datetime import date, datetime
 import logging
 from pathlib import Path
 
@@ -35,6 +35,9 @@ class MainWindow:
             self.logger.error(f"Failed to initialize backup manager: {e}")
             self.backup_manager = None
 
+        # System tray manager reference (wired up by main application)
+        self.system_tray_manager = None
+
         # Create main window
         self.root = tk.Tk()
         self.root.title("Worklog Manager v1.7.0")
@@ -47,22 +50,44 @@ class MainWindow:
         self.root.geometry(f"{window_width}x{window_height}")
         self.root.resizable(True, True)
         
-        # Initialize theme manager after root window is created
+        # Withdraw window initially to prevent flash during setup
+        self.root.withdraw()
+        
+        # Get saved theme before initializing theme manager
+        saved_theme = self.settings_manager.settings.appearance.theme
+        if hasattr(saved_theme, 'value'):
+            saved_theme = saved_theme.value
+        
+        # Initialize theme manager with the saved theme to avoid light theme flash
         try:
-            self.theme_manager = ThemeManager(self.root)
+            self.theme_manager = ThemeManager(self.root, initial_theme=saved_theme)
+            
+            # Immediately apply background color to prevent black flash
+            if self.theme_manager:
+                colors = self.theme_manager.get_theme_colors(saved_theme)
+                self.root.configure(bg=colors['bg_primary'])
+                self.root.update_idletasks()
+                
         except Exception as e:
             self.logger.error(f"Failed to initialize theme manager: {e}")
             self.theme_manager = None
         
-        # Apply initial theme
+        # Track window visibility state for theme reapplication
+        self._window_was_hidden = False
+        self._last_window_state = None
+        self._state_check_scheduled = False
+        
+        # Don't apply theme yet - wait until all widgets are created
+        # Just configure initial font settings
         if self.theme_manager:
+            # Apply initial fonts
             try:
-                current_theme = self.settings_manager.settings.appearance.theme
-                if hasattr(current_theme, 'value'):
-                    current_theme = current_theme.value
-                self.theme_manager.apply_theme(current_theme)
+                font_family = self.settings_manager.settings.appearance.font_family
+                font_size = self.settings_manager.settings.appearance.font_size
+                self.logger.info(f"Applying initial fonts: {font_family} {font_size}pt")
+                self.theme_manager.apply_fonts(font_family, font_size)
             except Exception as e:
-                self.logger.error(f"Failed to apply initial theme: {e}")
+                self.logger.error(f"Failed to apply initial fonts: {e}")
         
         # Set minimum size
         self.root.minsize(550, 450)
@@ -79,23 +104,17 @@ class MainWindow:
         # Track last known normal geometry for tray restore
         self._saved_geometry = self.root.geometry()
 
-        # Apply maximized state if enabled
-        self.logger.info(f"Window maximized setting: {appearance_settings.window_maximized}")
-        if appearance_settings.window_maximized:
-            self.logger.info("Applying maximized state")
-            self.root.state('zoomed')
-        else:
-            self.logger.info("Window should not be maximized")
-        
-        # Apply start minimized from general settings
-        general_settings = self.settings_manager.settings.general
-        if general_settings.start_minimized:
-            self.logger.info("Starting minimized")
-            self.root.iconify()
-        
+        # Don't apply maximized or minimized state yet - do it after theme is applied
         # Track maximize state for system tray restore
-        self._was_maximized = self.root.state() == 'zoomed'
+        self._was_maximized = appearance_settings.window_maximized
         self.root.bind("<Configure>", self._on_window_configure)
+        
+        # Bind to window visibility changes to reapply theme on restore
+        self.root.bind("<Map>", self._on_window_mapped)
+        self.root.bind("<Unmap>", self._on_window_unmapped)
+        
+        # Start monitoring window state for minimize/restore
+        self._start_state_monitoring()
 
         # Variables for break type selection
         self.break_type_var = tk.StringVar(value=BreakType.GENERAL.value)
@@ -105,6 +124,23 @@ class MainWindow:
         
         # Register widgets with theme manager
         self._register_widgets_with_theme_manager()
+        
+        # Apply theme after widgets are registered to ensure all widgets get themed
+        if self.theme_manager:
+            try:
+                current_theme = self.settings_manager.settings.appearance.theme
+                if hasattr(current_theme, 'value'):
+                    current_theme = current_theme.value
+                self.logger.info(f"Applying theme '{current_theme}' after widget registration")
+                self.theme_manager.apply_theme(current_theme)
+                
+                # Force immediate UI update
+                self.root.update_idletasks()
+                
+                # Apply theme again after a short delay to catch any stragglers
+                self.root.after(100, lambda: self._apply_theme_deferred(current_theme))
+            except Exception as e:
+                self.logger.error(f"Failed to apply theme after widget registration: {e}")
 
         # Set up timer callback
         self.worklog_manager.set_timer_callback(self._timer_update)
@@ -114,6 +150,38 @@ class MainWindow:
         
         # Setup window closing protocol
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
+        # Show window after everything is set up and themed
+        # The window was withdrawn at startup to prevent flash
+        general_settings = self.settings_manager.settings.general
+        
+        if general_settings.start_minimized:
+            # If starting minimized, iconify instead of deiconify
+            self.root.deiconify()  # First deiconify to normal
+            self.root.iconify()    # Then iconify to minimize
+        else:
+            # Show the window normally
+            self.root.deiconify()
+            
+            # Apply maximized state if needed (after deiconify)
+            if appearance_settings.window_maximized:
+                self.root.state('zoomed')
+    
+    def _get_font_config(self, size_modifier=0, bold=False):
+        """Get font configuration from settings.
+        
+        Args:
+            size_modifier: Amount to add/subtract from base font size
+            bold: Whether to make the font bold
+            
+        Returns:
+            tuple: Font configuration (family, size, weight)
+        """
+        font_family = self.settings_manager.settings.appearance.font_family
+        font_size = self.settings_manager.settings.appearance.font_size + size_modifier
+        if bold:
+            return (font_family, font_size, "bold")
+        return (font_family, font_size)
     
     def _center_window(self):
         """Center the window on the screen."""
@@ -213,6 +281,120 @@ class MainWindow:
         except Exception as e:
             self.logger.error(f"Error registering widgets with theme manager: {e}")
     
+    def _apply_theme_deferred(self, theme_name: str):
+        """Apply theme with a delay to catch any widgets that weren't ready initially.
+        
+        Args:
+            theme_name: Name of the theme to apply
+        """
+        if self.theme_manager:
+            try:
+                self.logger.debug(f"Deferred theme application for '{theme_name}'")
+                self.theme_manager.apply_theme(theme_name)
+            except Exception as e:
+                self.logger.error(f"Error in deferred theme application: {e}")
+    
+    def _on_window_mapped(self, event):
+        """Handle window map event (when window becomes visible).
+        
+        This ensures the theme is correctly applied when the window is restored
+        from minimized/iconified state, preventing theme flickering.
+        
+        Args:
+            event: The Map event
+        """
+        # Only handle events for the main window, not child widgets
+        if event.widget != self.root:
+            return
+        
+        try:
+            # Only reapply theme if the window was previously hidden
+            if not self._window_was_hidden:
+                return
+            
+            # Reset the flag
+            self._window_was_hidden = False
+            
+            # Check if window was actually minimized/iconified before
+            current_state = self.root.state()
+            
+            # Reapply theme to ensure correct colors after window restore
+            if self.theme_manager and current_state in ('normal', 'zoomed'):
+                current_theme = self.settings_manager.settings.appearance.theme
+                if hasattr(current_theme, 'value'):
+                    current_theme = current_theme.value
+                
+                self.logger.debug(f"Window restored from hidden state - reapplying theme '{current_theme}'")
+                
+                # Reapply theme immediately
+                self.theme_manager.apply_theme(current_theme)
+                
+                # Force update
+                self.root.update_idletasks()
+                
+        except Exception as e:
+            self.logger.debug(f"Error in window map handler: {e}")
+    
+    def _on_window_unmapped(self, event):
+        """Handle window unmap event (when window becomes hidden).
+        
+        Sets a flag to track that the window was hidden, so we can
+        reapply the theme when it becomes visible again.
+        
+        Args:
+            event: The Unmap event
+        """
+        # Only handle events for the main window, not child widgets
+        if event.widget != self.root:
+            return
+        
+        try:
+            self._window_was_hidden = True
+            self.logger.debug("Window hidden - will reapply theme on restore")
+        except Exception as e:
+            self.logger.debug(f"Error in window unmap handler: {e}")
+    
+    def _start_state_monitoring(self):
+        """Start monitoring window state changes for minimize/restore detection."""
+        self._check_window_state()
+    
+    def _check_window_state(self):
+        """Check for window state changes and reapply theme if restored from minimized."""
+        try:
+            current_state = self.root.state()
+            
+            # Check if state changed from 'iconic' (minimized) to 'normal' or 'zoomed'
+            if self._last_window_state == 'iconic' and current_state in ('normal', 'zoomed'):
+                self.logger.debug(f"Window restored from minimized state - reapplying theme")
+                
+                # Reapply theme immediately
+                if self.theme_manager:
+                    current_theme = self.settings_manager.settings.appearance.theme
+                    if hasattr(current_theme, 'value'):
+                        current_theme = current_theme.value
+                    
+                    # Apply theme
+                    self.theme_manager.apply_theme(current_theme)
+                    
+                    # Force immediate update
+                    self.root.update_idletasks()
+            
+            # Update last known state
+            self._last_window_state = current_state
+            
+        except Exception as e:
+            self.logger.debug(f"Error checking window state: {e}")
+        
+        # Schedule next check (every 200ms)
+        if not self._state_check_scheduled:
+            self._state_check_scheduled = True
+            self.root.after(200, self._schedule_state_check)
+    
+    def _schedule_state_check(self):
+        """Schedule the next state check."""
+        self._state_check_scheduled = False
+        self._check_window_state()
+    
     def _create_header(self, parent):
         """Create the header section with date and status.
         
@@ -227,13 +409,13 @@ class MainWindow:
         date_text = today.strftime("%A, %B %d, %Y")
         
         self.date_label = tk.Label(self.header_frame, text=f"Date: {date_text}",
-                             font=("Arial", 12, "bold"))
+                             font=self._get_font_config(size_modifier=2, bold=True))
         self.date_label.pack(side="left")
         
         # Status display
         self.status_var = tk.StringVar()
         self.status_label = tk.Label(self.header_frame, textvariable=self.status_var,
-                               font=("Arial", 12, "bold"))
+                               font=self._get_font_config(size_modifier=2, bold=True))
         self.status_label.pack(side="right")
     
     def _create_control_buttons(self, parent):
@@ -415,7 +597,9 @@ class MainWindow:
                 if messagebox.askyesno("Confirm", "Start work day?"):
                     if self.worklog_manager.start_day():
                         self._update_display()
+                        self._update_system_tray_status()
                         self.logger.info("Work day started")
+                        self._notify_tray("Work Started", "Your work day has begun!")
                     else:
                         messagebox.showerror("Error", "Failed to start work day")
             else:
@@ -451,8 +635,12 @@ class MainWindow:
                 if messagebox.askyesno("Confirm", message):
                     if self.worklog_manager.end_day():
                         self._update_display()
+                        self._update_system_tray_status()
                         messagebox.showinfo("Day Complete", "Work day has been ended and saved.")
                         self.logger.info("Work day ended")
+                        hours = calculations.productive_seconds // 3600
+                        minutes = (calculations.productive_seconds % 3600) // 60
+                        self._notify_tray("Work Day Ended", f"Productive time: {hours}h {minutes}m")
                     else:
                         messagebox.showerror("Error", "Failed to end work day")
             else:
@@ -470,7 +658,9 @@ class MainWindow:
                 if messagebox.askyesno("Confirm", f"Start a {break_type.value.lower()} break?"):
                     if self.worklog_manager.stop_work(break_type):
                         self._update_display()
+                        self._update_system_tray_status()
                         self.logger.info(f"Work paused for {break_type.value} break")
+                        self._notify_tray("Break Started", f"Enjoy your {break_type.value.lower()} break!")
                     else:
                         messagebox.showerror("Error", "Failed to start break")
             else:
@@ -486,7 +676,9 @@ class MainWindow:
                 if messagebox.askyesno("Confirm", "Resume working?"):
                     if self.worklog_manager.continue_work():
                         self._update_display()
+                        self._update_system_tray_status()
                         self.logger.info("Work resumed")
+                        self._notify_tray("Work Resumed", "Back to work!")
                     else:
                         messagebox.showerror("Error", "Failed to resume work")
             else:
@@ -494,6 +686,139 @@ class MainWindow:
         except Exception as e:
             self.logger.error(f"Error resuming work: {e}")
             messagebox.showerror("Error", f"Failed to resume work: {e}")
+
+    def _notify_tray(self, title: str, message: str):
+        """Send a notification via the system tray if available."""
+        if not self.system_tray_manager:
+            return
+
+        try:
+            self.system_tray_manager.show_notification(title, message)
+        except Exception as exc:
+            self.logger.debug(f"Tray notification failed: {exc}")
+
+    # Tray action wrappers - invoked via system tray callbacks without dialogs
+    def start_work_from_tray(self):
+        """Start work day without confirmation (tray action)."""
+        try:
+            if self.worklog_manager.can_perform_action(ActionType.START_DAY):
+                if self.worklog_manager.start_day():
+                    self._update_display()
+                    self._update_system_tray_status()
+                    self.logger.info("Work day started from tray")
+                    self._notify_tray("Work Started", "Your work day has begun!")
+                else:
+                    self.logger.error("Failed to start work day from tray")
+                    self._notify_tray("Error", "Failed to start work day")
+        except Exception as e:
+            self.logger.error(f"Error starting day from tray: {e}")
+
+    def end_work_from_tray(self):
+        """End work day without confirmation (tray action)."""
+        try:
+            if self.worklog_manager.can_perform_action(ActionType.END_DAY):
+                if self.worklog_manager.end_day():
+                    self._update_display()
+                    self._update_system_tray_status()
+                    self.logger.info("Work day ended from tray")
+                    calculations = self.worklog_manager.get_current_calculations()
+                    hours = calculations.productive_seconds // 3600
+                    minutes = (calculations.productive_seconds % 3600) // 60
+                    self._notify_tray("Work Day Ended", f"Productive time: {hours}h {minutes}m")
+                else:
+                    self.logger.error("Failed to end work day from tray")
+                    self._notify_tray("Error", "Failed to end work day")
+        except Exception as e:
+            self.logger.error(f"Error ending day from tray: {e}")
+
+    def take_break_from_tray(self):
+        """Start a break without dialog (tray action)."""
+        try:
+            if self.worklog_manager.can_perform_action(ActionType.STOP):
+                break_type = BreakType(self.break_type_var.get())
+                if self.worklog_manager.stop_work(break_type):
+                    self._update_display()
+                    self._update_system_tray_status()
+                    self.logger.info(f"Break started from tray: {break_type.value}")
+                    self._notify_tray("Break Started", f"Enjoy your {break_type.value.lower()} break!")
+                else:
+                    self.logger.error("Failed to start break from tray")
+                    self._notify_tray("Error", "Failed to start break")
+        except Exception as e:
+            self.logger.error(f"Error starting break from tray: {e}")
+
+    def resume_work_from_tray(self):
+        """Resume work without dialog (tray action)."""
+        try:
+            if self.worklog_manager.can_perform_action(ActionType.CONTINUE):
+                if self.worklog_manager.continue_work():
+                    self._update_display()
+                    self._update_system_tray_status()
+                    self.logger.info("Work resumed from tray")
+                    self._notify_tray("Work Resumed", "Back to work!")
+                else:
+                    self.logger.error("Failed to resume work from tray")
+                    self._notify_tray("Error", "Failed to resume work")
+        except Exception as e:
+            self.logger.error(f"Error resuming work from tray: {e}")
+
+    def get_tray_is_working(self):
+        """Return True when a work session is in progress for tray monitoring."""
+        try:
+            state = self.worklog_manager.get_current_state()
+            return state in (WorklogState.WORKING, WorklogState.ON_BREAK)
+        except Exception:
+            return False
+
+    def get_tray_is_on_break(self):
+        """Return True when the current state indicates an active break."""
+        try:
+            return self.worklog_manager.get_current_state() == WorklogState.ON_BREAK
+        except Exception:
+            return False
+
+    def get_tray_work_start_time(self):
+        """Return the workday start time as a datetime for tray displays."""
+        session = getattr(self.worklog_manager, "current_session", None)
+        if not session or not session.start_time:
+            return None
+
+        try:
+            return self.worklog_manager.time_calculator.parse_time(session.start_time)
+        except Exception:
+            try:
+                return datetime.fromisoformat(session.start_time)
+            except Exception:
+                return None
+
+    def _update_system_tray_status(self):
+        """Update system tray icon based on the current worklog state."""
+        if not self.system_tray_manager:
+            return
+
+        try:
+            state = self.worklog_manager.get_current_state()
+            work_start_time = None
+            is_on_break = False
+
+            if state == WorklogState.NOT_STARTED:
+                tray_status = "idle"
+            elif state == WorklogState.WORKING:
+                tray_status = "working"
+                work_start_time = self.get_tray_work_start_time()
+            elif state == WorklogState.ON_BREAK:
+                tray_status = "break"
+                is_on_break = True
+                work_start_time = self.get_tray_work_start_time()
+            elif state == WorklogState.DAY_ENDED:
+                tray_status = "idle"
+            else:
+                tray_status = "idle"
+
+            self.system_tray_manager.update_status(tray_status, work_start_time, is_on_break)
+
+        except Exception as e:
+            self.logger.error(f"Error updating system tray status: {e}")
     
     def _export_data(self):
         """Handle Export Data button click."""
@@ -523,7 +848,7 @@ class MainWindow:
             main_frame.pack(fill='both', expand=True, padx=10, pady=10)
             
             # Add title
-            ttk.Label(main_frame, text="Select Export Options:", font=('Arial', 12, 'bold')).pack(pady=(0, 10))
+            ttk.Label(main_frame, text="Select Export Options:", font=self._get_font_config(size_modifier=2, bold=True)).pack(pady=(0, 10))
             
             # Date range selection
             range_frame = ttk.LabelFrame(main_frame, text="Date Range", padding=10)
@@ -731,33 +1056,53 @@ class MainWindow:
             def on_settings_changed(settings=None):
                 """Callback when settings are changed."""
                 try:
-                    # Force reload settings from file to get latest values
-                    self.settings_manager.load_settings()
+                    # Only reload if settings not provided (settings already saved by dialog)
+                    if settings is None:
+                        self.settings_manager.load_settings()
+                        settings = self.settings_manager.settings
                     
                     # Update worklog manager with new settings if it has a settings reference
                     if hasattr(self.worklog_manager, 'settings_manager'):
                         self.worklog_manager.settings_manager = self.settings_manager
                     
                     # Update timer display and break tracker with new settings
+                    # Note: update_settings_manager already calls _update_fonts internally
                     if hasattr(self.timer_display, 'update_settings_manager'):
                         self.timer_display.update_settings_manager(self.settings_manager)
                     if hasattr(self.break_tracker, 'settings_manager'):
                         self.break_tracker.settings_manager = self.settings_manager
-                        
-                    # Refresh the display to reflect any setting changes
-                    self._update_display()
                     
-                    # Apply theme changes if theme manager is available
+                    # Update fonts in main window UI (not timer_display, already done above)
+                    if hasattr(self, 'date_label') and self.date_label:
+                        self.date_label.config(font=self._get_font_config(size_modifier=2, bold=True))
+                    if hasattr(self, 'status_label') and self.status_label:
+                        self.status_label.config(font=self._get_font_config(size_modifier=2, bold=True))
+                    
+                    # Apply fonts globally through theme manager
+                    if self.theme_manager and hasattr(settings, 'appearance'):
+                        font_family = settings.appearance.font_family
+                        font_size = settings.appearance.font_size
+                        self.logger.info(f"Applying fonts globally: {font_family} {font_size}pt")
+                        self.theme_manager.apply_fonts(font_family, font_size)
+                    
+                    self.logger.info("Settings updated successfully")
+                        
+                    # Note: _update_display() is not called here as it's expensive and the
+                    # worklog state hasn't changed. It will be called on the next timer update.
+                    
+                    # Apply theme changes ONLY if theme has actually changed
                     if self.theme_manager:
                         try:
-                            if settings is None:
-                                settings = self.settings_manager.settings
                             if hasattr(settings, 'appearance'):
                                 theme_value = settings.appearance.theme
                                 if hasattr(theme_value, 'value'):
                                     theme_value = theme_value.value
-                                self.logger.info(f"Applying theme: {theme_value}")
-                                self.theme_manager.apply_theme(theme_value)
+                                # Only apply if theme changed
+                                if theme_value != self.theme_manager.current_theme:
+                                    self.logger.info(f"Theme changed from {self.theme_manager.current_theme} to {theme_value}, applying...")
+                                    self.theme_manager.apply_theme(theme_value)
+                                else:
+                                    self.logger.debug(f"Theme unchanged ({theme_value}), skipping theme application")
                         except Exception as e:
                             self.logger.error(f"Error applying theme: {e}")
                             
@@ -780,6 +1125,26 @@ class MainWindow:
         except Exception as e:
             self.logger.error(f"Error opening settings: {e}")
             messagebox.showerror("Error", f"Could not open settings dialog: {e}")
+    
+    def _update_fonts(self):
+        """Update fonts in all UI components based on current settings."""
+        try:
+            # Update date label
+            if hasattr(self, 'date_label') and self.date_label:
+                self.date_label.config(font=self._get_font_config(size_modifier=2, bold=True))
+            
+            # Update status label
+            if hasattr(self, 'status_label') and self.status_label:
+                self.status_label.config(font=self._get_font_config(size_modifier=2, bold=True))
+            
+            # Update timer display fonts
+            if hasattr(self, 'timer_display') and self.timer_display:
+                if hasattr(self.timer_display, '_update_fonts'):
+                    self.timer_display._update_fonts()
+            
+            self.logger.info("Updated fonts based on settings")
+        except Exception as e:
+            self.logger.error(f"Error updating fonts: {e}")
     
     def _update_display(self):
         """Update the display with current state and calculations."""
@@ -925,6 +1290,18 @@ class MainWindow:
                     self.logger.debug(f"Failed to restore geometry {self._saved_geometry}: {exc}")
         self.root.lift()
         self.root.focus_force()
+        
+        # Reapply theme to ensure correct colors after window restore
+        if self.theme_manager:
+            try:
+                current_theme = self.settings_manager.settings.appearance.theme
+                if hasattr(current_theme, 'value'):
+                    current_theme = current_theme.value
+                self.logger.debug(f"Reapplying theme '{current_theme}' after window restore")
+                self.theme_manager.apply_theme(current_theme)
+                self.root.update_idletasks()
+            except Exception as e:
+                self.logger.error(f"Error reapplying theme on window restore: {e}")
     
     def hide_window(self):
         """Hide the main window to system tray."""
@@ -937,6 +1314,10 @@ class MainWindow:
                 self._saved_geometry = self.root.geometry()
             except tk.TclError:
                 pass
+        
+        # Mark that window is being hidden
+        self._window_was_hidden = True
+        
         self.root.withdraw()
 
     def toggle_window_visibility(self):
